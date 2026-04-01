@@ -1,176 +1,177 @@
 # WayCore Bank Scraper
 
-Extracts balances and full transaction history from bank web portals via authenticated browser automation. Built for reliability at scale: each sync is a durable, checkpointed workflow that survives worker crashes, handles OTP mid-flight, and writes idempotent data.
+Durable browser automation that logs into bank portals, completes OTP challenges, and extracts accounts, transactions, and balances into PostgreSQL. Survives crashes mid-sync, handles OTP pause/resume, writes idempotent data.
+
+**Demo result:** 3 accounts, 130 transactions, 3 balance snapshots from [Heritage Trust Bank](https://demo-bank-2.vercel.app) in ~2 minutes.
 
 ---
 
-## Quick Start
+## Local Setup (copy-paste)
 
 ### Prerequisites
-- Docker + Docker Compose
-- [uv](https://docs.astral.sh/uv/getting-started/installation/)
-- An [Anthropic API key](https://console.anthropic.com/)
+- Python 3.12+, [uv](https://docs.astral.sh/uv/getting-started/installation/)
+- PostgreSQL 16 (`brew install postgresql@16 && brew services start postgresql@16`)
+- [Restate](https://restate.dev) (`brew install restatedev/tap/restate-server`)
+- [Anthropic API key](https://console.anthropic.com/) (only needed for LLM fallback)
 
-### 1. Configure
+### 1. Clone and install
 
 ```bash
-cp .env.example .env
-# Edit .env and set:
-#   ANTHROPIC_API_KEY=sk-ant-...
-#   ENCRYPTION_KEY=$(python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
+git clone https://github.com/mayilian/waycore-bank-scraper.git
+cd waycore-bank-scraper
+uv sync
+uv run playwright install chromium
 ```
 
-### 2. Start infrastructure
+### 2. Create database
 
 ```bash
-docker compose up -d
-```
-
-This starts PostgreSQL, Restate, the sync worker, and auto-registers the worker with Restate.
-
-### 3. Run migrations
-
-```bash
+createdb waycore
+psql -d waycore -c "CREATE USER waycore WITH PASSWORD 'waycore'; GRANT ALL ON DATABASE waycore TO waycore;"
+psql -d waycore -c "GRANT ALL ON SCHEMA public TO waycore;"
 uv run alembic upgrade head
 ```
 
-### 4. Sync the demo bank
+### 3. Configure
+
+```bash
+cat > .env << 'EOF'
+ANTHROPIC_API_KEY=sk-ant-...your-key...
+ENCRYPTION_KEY=$(python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
+DATABASE_URL=postgresql+asyncpg://waycore:waycore@localhost:5432/waycore
+RESTATE_INGRESS_URL=http://localhost:8080
+PLAYWRIGHT_HEADFUL=0
+EOF
+```
+
+### 4. Start services
+
+```bash
+# Terminal 1: Restate server
+restate-server --listen-mode tcp
+
+# Terminal 2: Worker
+uv run hypercorn "src.worker.app:app" --bind "0.0.0.0:9000"
+
+# Terminal 3: Register worker (once)
+curl -X POST http://localhost:9070/deployments \
+  -H "Content-Type: application/json" \
+  -d '{"uri": "http://localhost:9000"}'
+```
+
+### 5. Run sync
 
 ```bash
 uv run waycore sync \
   --bank-url https://demo-bank-2.vercel.app \
-  --username user \
-  --password pass \
-  --otp 123456
+  --username user --password pass --otp 123456
 ```
 
-Live step trace prints to the terminal as the workflow progresses:
-
 ```
-✓ Job created: a3f1bc2d-...
+✓ Job created: b9103d52-...
   Bank: heritage_bank  URL: https://demo-bank-2.vercel.app
 
 Live step trace (polling every 2s):
 
-  ✓ login                                    4.2s
-  ✓ get_accounts                             2.8s
-  ✓ transactions_ACC001                     18.3s
-  ✓ balance_ACC001                           1.1s
-  ✓ finalise                                 0.2s
+  ✓ login                                     20.2s
+  ✓ get_accounts                              9.4s
+  ✓ transactions_583761204                    17.2s
+  ✓ balance_583761204                         17.6s
+  ✓ transactions_583769842                    16.7s
+  ✓ balance_583769842                         16.5s
+  ✓ transactions_739220031                    16.7s
+  ✓ balance_739220031                         17.1s
+  ✓ finalise                                  0.0s
 
-✓ Sync complete. Accounts: 1  Transactions: 847
+✓ Sync complete. Accounts: 3  Transactions: 130
 ```
 
-### 5. Inspect results
+### 6. Inspect results
 
 ```bash
-uv run waycore accounts
-uv run waycore transactions
-uv run waycore jobs
-```
-
----
-
-## OTP Modes
-
-| Mode | When to use | How to provide |
-|---|---|---|
-| `static` | Demo banks, fixed OTP | `--otp 123456` on the `sync` command |
-| `totp` | TOTP authenticator app | `--otp $(totp-cli generate ...)` |
-| `webhook` | OTP arrives via SMS/email | Omit `--otp`; run `waycore otp` when it arrives |
-
-For webhook mode the workflow suspends (zero resources held) until you send the OTP:
-
-```bash
-uv run waycore otp --job-id <id> --code 123456
+uv run waycore accounts       # list synced accounts
+uv run waycore transactions   # list transactions
+uv run waycore jobs           # list sync jobs
 ```
 
 ---
 
 ## Architecture
 
-### What type of workload is this?
-
-A **durable, stateful, I/O-bound automation workflow**. Each sync is a sequential chain of steps (login → OTP → extract accounts → extract transactions → persist) with these properties:
-
-- Steps must execute in order and be checkpointed *individually* — a crash mid-extraction should resume from the last completed step, not re-login from scratch
-- External dependencies (bank websites) are unreliable — per-step retry, not whole-job retry
-- Human input may arrive mid-flight (OTP codes)
-- Re-running a sync must never produce duplicate data
-
-### What's the best way to execute this workload?
-
-**Durable execution via [Restate](https://restate.dev/).** A job queue knows if a job succeeded or failed. Restate knows *which step* succeeded — replay starts from the right place. The OTP pause (`ctx.promise().value()`) suspends the workflow with zero resources held until the signal arrives. Each `ctx.run("step_name", fn)` is automatically journaled and retried on failure.
-
-### Could it scale horizontally?
-
-Yes. Workers are stateless HTTP services. Restate routes each step invocation to any live instance. To handle more concurrent syncs:
-
-```bash
-docker compose up -d --scale worker=5
+```
+CLI (typer) → Restate (durable workflow) → Worker (Playwright + LLM) → PostgreSQL
 ```
 
-No other changes. The constraint is browser memory (~400 MB per Chromium instance), not DB throughput. For production at true scale: deploy workers as containers on ECS or Kubernetes, point `RESTATE_ENDPOINT` at Restate Cloud, and `DATABASE_URL` at a managed Postgres (Neon, RDS). No code changes required.
+### Why Restate?
 
-### Three execution layers
+Each sync is a chain of steps: login → OTP → accounts → per-account transactions → per-account balance. Restate journals each step — if the worker crashes mid-extraction, replay resumes from the last completed step. No re-login, no duplicate data. OTP pause (`ctx.promise`) suspends with zero resources until the code arrives.
+
+### Tiered extraction (the key design)
 
 ```
-Layer 1 — Playwright + stealth      Always runs. Drives the browser.
-                                    Bezier mouse, human-paced typing,
-                                    anti-detection patches. No opinion
-                                    about what to do.
-       ↓
-Layer 2 — LLM (Claude claude-sonnet-4-6)    Always runs. Multiple focused calls
-                                    per sync phase. Each call receives a
-                                    trimmed DOM summary + screenshot and
-                                    returns structured JSON.
-       ↓
-Layer 3 — Bank adapter              Sequences goals. HeritageBankAdapter
-                                    passes known selector hints (fast path).
-                                    GenericBankAdapter lets the LLM discover
-                                    everything (any unknown bank URL).
+Tier 1 — Deterministic DOM parsing    Known selectors, direct table reads.
+                                      Zero LLM cost. Sub-second extraction.
+                                      Built per bank during onboarding.
+         ↓ (selector miss)
+Tier 2 — LLM text-only               DOM summary → Claude → structured JSON.
+                                      ~2K tokens, handles UI changes
+                                      automatically.
+         ↓ (ambiguous DOM)
+Tier 3 — LLM vision                  DOM + screenshot → Claude. Expensive
+                                      but handles anything. Used by
+                                      GenericAdapter for unknown banks.
 ```
 
-### Data model highlights
+The Heritage adapter (demo bank) runs entirely on Tier 1 — zero API calls in the happy path.
 
-- `Decimal` in Python + `NUMERIC(20,4)` in Postgres for all money columns — no float precision loss
-- `balances` is append-only (never updated) — enables balance history
-- `transactions` uses `UNIQUE(account_id, external_id)` + `ON CONFLICT DO NOTHING` — all syncs are idempotent
-- Multi-tenant schema (`organizations → users → bank_connections → accounts`) — ready for RLS enforcement in production
-- `sync_steps` is the audit trail: each completed step writes a record; failures include screenshot path and traceback
+### Data model
+
+- `NUMERIC(20,4)` + Python `Decimal` for all money — no float precision loss
+- Transactions: `UNIQUE(account_id, external_id)` + `ON CONFLICT DO NOTHING` — idempotent syncs
+- Balances: append-only (never UPDATE) — full balance history
+- `sync_steps`: audit trail with screenshot paths and tracebacks on failure
+- Multi-tenant: organizations → users → bank_connections → accounts → transactions/balances
 
 ---
 
-## Project Structure
+## OTP Modes
 
-```
-src/
-  adapters/       BankAdapter ABC, HeritageBankAdapter, GenericBankAdapter
-  agent/          LLM extraction (per-goal focused calls)
-  core/           Config, Fernet crypto, structlog, Playwright stealth, screenshots
-  db/             SQLAlchemy models, async session factory
-  worker/         Restate workflow, step implementations, ASGI app
-cli.py            Typer CLI
-alembic/          DB migrations
-docker-compose.yml
-Dockerfile
-```
+| Mode | Use case | How |
+|---|---|---|
+| `static` | Demo banks, fixed OTP | `--otp 123456` |
+| `webhook` | OTP via SMS/email | Omit `--otp`, then run `waycore otp --job-id <id> --code <code>` when it arrives |
+
+---
 
 ## Adding a New Bank
 
 1. Create `src/adapters/<slug>.py` implementing `BankAdapter`
 2. Register in `ADAPTER_REGISTRY` in `src/adapters/__init__.py`
-3. The CLI auto-detects the slug from the URL domain
+3. CLI auto-detects the slug from the URL domain
 
-Unknown banks automatically use `GenericBankAdapter` — the LLM discovers the login form, OTP flow, accounts, and transactions from scratch.
+Unknown bank URLs automatically use `GenericBankAdapter` (Tier 3 — full LLM).
 
-## Cloud Extension
+## Project Structure
 
-| Component | Local | Cloud |
+```
+cli.py              CLI entry point: sync, otp, jobs, transactions, accounts
+src/
+  adapters/         BankAdapter ABC + per-bank implementations
+  agent/            LLM extraction (per-goal focused calls, vision fallback)
+  core/             Config, Fernet crypto, structlog, Playwright stealth
+  db/               SQLAlchemy models, async session factory
+  worker/           Restate workflow, step implementations, ASGI app
+tests/              Unit tests (crypto, models, adapters, extractor)
+alembic/            Database migrations
+```
+
+## Production Deployment
+
+| Component | Local | Production |
 |---|---|---|
-| Database | Docker `postgres:16` | Set `DATABASE_URL` → Neon / RDS |
-| Workflow engine | Docker `restatedev/restate` | Set `RESTATE_ENDPOINT` → Restate Cloud |
-| Screenshots | Local volume | Set `SCREENSHOT_BACKEND=s3` + Cloudflare R2 credentials |
-| Compute | `docker compose up` | `fly deploy` |
+| Database | Local PostgreSQL | Neon / RDS |
+| Workflow engine | Local Restate | Restate Cloud |
+| Screenshots | Local filesystem | S3 / Cloudflare R2 |
+| Compute | `hypercorn` | ECS / Kubernetes |
 
-No code changes required for any of these migrations.
+No code changes required — configuration only via environment variables.
