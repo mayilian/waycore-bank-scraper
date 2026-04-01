@@ -100,14 +100,22 @@ async def run(ctx: WorkflowContext, req: dict[str, Any]) -> dict[str, Any]:
             f"transactions_{ext_id}",
             functools.partial(
                 steps.step_get_transactions,
-                connection_id, job_id, session_state, acc, post_login_url,
+                connection_id,
+                job_id,
+                session_state,
+                acc,
+                post_login_url,
             ),
         )
         await ctx.run(
             f"balance_{ext_id}",
             functools.partial(
                 steps.step_get_balance,
-                connection_id, job_id, session_state, acc, post_login_url,
+                connection_id,
+                job_id,
+                session_state,
+                acc,
+                post_login_url,
             ),
         )
 

@@ -132,9 +132,7 @@ class HeritageBankAdapter(BankAdapter):
             if nav.action == "click" and nav.selector:
                 await page.click(nav.selector)
             else:
-                raise RuntimeError(
-                    f"Could not navigate to account {account.external_id}"
-                )
+                raise RuntimeError(f"Could not navigate to account {account.external_id}")
 
         await page.wait_for_load_state("networkidle", timeout=15_000)
         # Wait for transaction table or balance to render in the SPA
