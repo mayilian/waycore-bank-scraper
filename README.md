@@ -165,6 +165,37 @@ tests/              Unit tests (crypto, models, adapters, extractor)
 alembic/            Database migrations
 ```
 
+## Roadmap
+
+### Must do
+
+- [ ] **LLM provider abstraction** — Currently hardcoded to Anthropic Claude. Extract an `LLMClient` interface so operators can plug in any provider (OpenAI, Gemini, local models via Ollama, etc.) via config. The app should run with any LLM that supports text + vision.
+- [ ] **Replace SPA sleep waits** — Current `asyncio.sleep(2-3)` after navigation is brittle. Use `page.wait_for_function()` with content-based checks (e.g., table row count > 0) for speed and reliability.
+- [ ] **Handle empty account list** — If `get_accounts` returns 0 accounts, fail loudly with a screenshot instead of silently succeeding with no data.
+- [ ] **Stable transaction dedup** — SHA256 of `date|description|amount` can collide on duplicate transactions. Include row index or running balance in the hash, or use bank-provided IDs when available.
+
+### Should do
+
+- [ ] **Infinite scroll handling** — Currently only supports "Next" button pagination. Banks using infinite scroll need: scroll to bottom → wait for new rows → extract → repeat until row count stabilizes. Not yet implemented — GenericAdapter and any new adapters must account for this.
+- [ ] **CSV/PDF export fast path** — Some banks offer "Download CSV" or "Export Statement". When available, this is faster and more reliable than DOM parsing. Add `try_export()` to BankAdapter — download file, parse, fall back to DOM/LLM if no export button found.
+- [ ] **Screenshot on LLM fallback** — When Tier 1 fails and Tier 2/3 kicks in, capture a screenshot + DOM snapshot for debugging. Currently only captured on exceptions.
+- [ ] **GenericAdapter end-to-end testing** — All testing was against Heritage (demo bank). Generic adapter needs validation against a second bank.
+- [ ] **Partial failure tolerance** — If transactions succeed for account 1 but fail for account 2, don't mark the whole job as failed. Support `partial_success` status with per-account results.
+
+### Nice to have
+
+- [ ] **Auto-promote LLM discoveries** — When LLM fallback finds working selectors, cache them per `bank_slug` so next sync uses Tier 1. Automatic selector learning.
+- [ ] **Parallel account extraction** — Extract transactions for multiple accounts concurrently (separate browser tabs). Careful with rate limits / bot detection.
+- [ ] **Date-range pagination** — For banks without Next buttons, iterate by date range (e.g., monthly chunks) to get full history.
+
+### Design scope (explicitly not handling yet)
+
+- **CAPTCHA solving** — Out of scope. If a bank presents a CAPTCHA, the sync fails with a screenshot.
+- **Multi-factor beyond OTP** — Push notifications, biometric, hardware keys are not supported. Only numeric OTP codes (static, TOTP, webhook).
+- **Real-time / streaming sync** — Syncs are batch operations triggered by CLI. No continuous monitoring or webhook-triggered syncs yet.
+
+---
+
 ## Production Deployment
 
 | Component | Local | Production |
