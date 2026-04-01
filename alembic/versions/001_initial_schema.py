@@ -8,8 +8,9 @@ Create Date: 2026-04-01
 from collections.abc import Sequence
 
 import sqlalchemy as sa
-from alembic import op
 from sqlalchemy.dialects.postgresql import UUID
+
+from alembic import op
 
 revision: str = "001"
 down_revision: str | None = None
@@ -103,9 +104,7 @@ def upgrade() -> None:
     op.create_table(
         "transactions",
         sa.Column("id", UUID(as_uuid=False), primary_key=True),
-        sa.Column(
-            "account_id", UUID(as_uuid=False), sa.ForeignKey("accounts.id"), nullable=False
-        ),
+        sa.Column("account_id", UUID(as_uuid=False), sa.ForeignKey("accounts.id"), nullable=False),
         sa.Column("external_id", sa.Text(), nullable=False),
         sa.Column("posted_at", sa.DateTime(timezone=True)),
         sa.Column("description", sa.Text()),
@@ -119,9 +118,7 @@ def upgrade() -> None:
             server_default=sa.text("now()"),
             nullable=False,
         ),
-        sa.UniqueConstraint(
-            "account_id", "external_id", name="uq_transactions_account_external"
-        ),
+        sa.UniqueConstraint("account_id", "external_id", name="uq_transactions_account_external"),
     )
     op.create_index("ix_transactions_account_id", "transactions", ["account_id"])
     op.create_index("ix_transactions_posted_at", "transactions", ["posted_at"])

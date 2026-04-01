@@ -84,22 +84,42 @@ async def _sync(
 
     bank_slug = _bank_slug_from_url(bank_url)
     job_id = str(uuid.uuid4())
-    connection_id = str(uuid.uuid4())
 
+    # Reuse existing connection for the same user+bank+URL, or create a new one.
+    # This prevents duplicate accounts/transactions on re-runs.
     async with get_session() as db:
-        db.add(
-            BankConnection(
-                id=connection_id,
-                user_id=_DEFAULT_USER_ID,
-                bank_slug=bank_slug,
-                bank_name=bank_slug.replace("_", " ").title(),
-                login_url=bank_url,
-                username_enc=encrypt(username),
-                password_enc=encrypt(password),
-                otp_mode=otp_mode,
-                otp_value_enc=encrypt(otp) if otp else None,
+        result = await db.execute(
+            select(BankConnection).where(
+                BankConnection.user_id == _DEFAULT_USER_ID,
+                BankConnection.bank_slug == bank_slug,
+                BankConnection.login_url == bank_url,
             )
         )
+        existing_conn = result.scalars().first()
+
+        if existing_conn:
+            connection_id = existing_conn.id
+            # Update credentials in case they changed
+            existing_conn.username_enc = encrypt(username)
+            existing_conn.password_enc = encrypt(password)
+            existing_conn.otp_mode = otp_mode
+            existing_conn.otp_value_enc = encrypt(otp) if otp else None
+        else:
+            connection_id = str(uuid.uuid4())
+            db.add(
+                BankConnection(
+                    id=connection_id,
+                    user_id=_DEFAULT_USER_ID,
+                    bank_slug=bank_slug,
+                    bank_name=bank_slug.replace("_", " ").title(),
+                    login_url=bank_url,
+                    username_enc=encrypt(username),
+                    password_enc=encrypt(password),
+                    otp_mode=otp_mode,
+                    otp_value_enc=encrypt(otp) if otp else None,
+                )
+            )
+
         db.add(
             SyncJob(
                 id=job_id,
@@ -120,9 +140,11 @@ async def _sync(
         "connection_id": connection_id,
         "otp_mode": otp_mode,
     }
-    async with httpx.AsyncClient(timeout=10) as client:
+    # Use /send to trigger asynchronously — returns immediately.
+    # The CLI polls the DB for step progress instead of waiting for completion.
+    async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.post(
-            f"{settings.restate_ingress_url}/SyncBankWorkflow/{job_id}/run",
+            f"{settings.restate_ingress_url}/SyncBankWorkflow/{job_id}/run/send",
             json=payload,
         )
         if resp.status_code not in (200, 202):
@@ -264,7 +286,7 @@ async def _list_transactions(account_id: str | None, limit: int) -> None:
             (txn.description or "")[:50],
             amount_fmt,
             txn.currency,
-            f"{txn.running_balance:.2f}" if txn.running_balance else "—",
+            f"{txn.running_balance:.2f}" if txn.running_balance is not None else "—",
         )
     console.print(table)
 

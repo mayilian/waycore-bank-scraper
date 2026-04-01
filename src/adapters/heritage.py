@@ -11,6 +11,7 @@ URL: https://demo-bank-2.vercel.app/
 
 import asyncio
 from datetime import UTC, datetime
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from playwright.async_api import Page
@@ -18,7 +19,6 @@ from playwright.async_api import Page
 from src.adapters.base import AccountData, BalanceData, BankAdapter, TransactionData
 from src.agent import extractor
 from src.core.logging import get_logger
-from src.core.stealth import human_fill, human_move_and_click
 
 log = get_logger(__name__)
 
@@ -41,18 +41,26 @@ class HeritageBankAdapter(BankAdapter):
 
     async def fill_and_submit_credentials(self, page: Page, username: str, password: str) -> None:
         try:
-            await human_fill(page, _SEL_USERNAME, username)
-            await human_fill(page, _SEL_PASSWORD, password)
-            await asyncio.sleep(0.4)
-            await human_move_and_click(page, _SEL_SUBMIT)
+            await page.fill(_SEL_USERNAME, username)
+            await page.fill(_SEL_PASSWORD, password)
+            await asyncio.sleep(0.3)
+            await page.click(_SEL_SUBMIT)
         except Exception:
             log.warning("heritage.selector_miss_credentials", fallback="llm")
             fields = await extractor.find_login_fields(page)
-            await human_fill(page, fields["username_selector"], username)
-            await human_fill(page, fields["password_selector"], password)
-            await human_move_and_click(page, fields["submit_selector"])
+            await page.fill(fields["username_selector"], username)
+            await page.fill(fields["password_selector"], password)
+            await page.click(fields["submit_selector"])
 
-        await page.wait_for_load_state("networkidle", timeout=15_000)
+        # Wait for the SPA to transition — either OTP form or dashboard
+        try:
+            await page.wait_for_selector(
+                "#otp, input[name='otp'], nav, [class*='dashboard']",
+                timeout=15_000,
+            )
+        except Exception:
+            log.warning("heritage.post_login_transition_timeout")
+        await asyncio.sleep(1)
 
     async def is_otp_required(self, page: Page) -> bool:
         state = await extractor.detect_post_login_state(page)
@@ -60,20 +68,32 @@ class HeritageBankAdapter(BankAdapter):
 
     async def submit_otp(self, page: Page, otp: str) -> None:
         try:
-            await human_fill(page, _SEL_OTP_INPUT, otp)
+            await page.fill(_SEL_OTP_INPUT, otp)
             await asyncio.sleep(0.3)
-            await human_move_and_click(page, _SEL_OTP_SUBMIT)
+            await page.click(_SEL_OTP_SUBMIT)
         except Exception:
             log.warning("heritage.selector_miss_otp", fallback="llm")
             sel = await extractor.find_otp_field(page)
-            await human_fill(page, sel, otp)
-            await human_move_and_click(page, _SEL_OTP_SUBMIT)
+            await page.fill(sel, otp)
+            await page.click(_SEL_OTP_SUBMIT)
 
-        await page.wait_for_load_state("networkidle", timeout=15_000)
+        # Wait for the SPA to process OTP and transition to dashboard
+        try:
+            await page.wait_for_selector(
+                "nav, [class*='dashboard'], table, h2:has-text('Account')",
+                timeout=20_000,
+            )
+        except Exception:
+            log.warning("heritage.post_otp_transition_timeout")
+        await asyncio.sleep(3)
 
     async def get_accounts(self, page: Page) -> list[AccountData]:
-        # LLM extracts accounts — structured parsing of account lists is fragile
-        # across different bank UI frameworks.
+        # SPA renders asynchronously from localStorage — wait for table content
+        try:
+            await page.wait_for_selector("table, td, [class*='account']", timeout=15_000)
+            await asyncio.sleep(2)  # let remaining rows render
+        except Exception:
+            log.warning("heritage.dashboard_table_not_found")
         raw_accounts = await extractor.extract_accounts(page)
         accounts = []
         for raw in raw_accounts:
@@ -90,11 +110,47 @@ class HeritageBankAdapter(BankAdapter):
         log.info("heritage.accounts_found", count=len(accounts))
         return accounts
 
+    async def navigate_to_account(self, page: Page, account: AccountData) -> None:
+        # Wait for the account table to render (SPA loads from localStorage)
+        try:
+            await page.wait_for_selector("table td", timeout=15_000)
+            await asyncio.sleep(2)
+        except Exception:
+            log.warning("heritage.table_not_ready", account=account.external_id)
+
+        # Find the table row containing this account's external_id
+        # and click the "Open Details" link in that row.
+        row_link = page.locator(
+            f"tr:has(td:text-is('{account.external_id}')) a:has-text('Open Details'), "
+            f"tr:has(td:text-is('{account.external_id}')) a:has-text('Details')"
+        )
+        if await row_link.count() > 0:
+            await row_link.first.click()
+        else:
+            # Fallback: use LLM to find the link
+            nav = await extractor.find_account_link(page, account.external_id)
+            if nav.action == "click" and nav.selector:
+                await page.click(nav.selector)
+            else:
+                raise RuntimeError(
+                    f"Could not navigate to account {account.external_id}"
+                )
+
+        await page.wait_for_load_state("networkidle", timeout=15_000)
+        # Wait for transaction table or balance to render in the SPA
+        try:
+            await page.wait_for_selector("table, td, [class*='transaction']", timeout=15_000)
+            await asyncio.sleep(3)
+        except Exception:
+            log.warning("heritage.account_detail_slow", account=account.external_id)
+        log.debug("heritage.navigated_to_account", account=account.external_id)
+
     async def get_transactions(self, page: Page, account: AccountData) -> list[TransactionData]:
         all_transactions: list[TransactionData] = []
         page_num = 0
+        max_pages = 50
 
-        while True:
+        while page_num < max_pages:
             page_num += 1
             log.debug("heritage.extracting_txn_page", account=account.external_id, page=page_num)
 
@@ -108,10 +164,12 @@ class HeritageBankAdapter(BankAdapter):
             if next_action.action != "click" or not next_action.selector:
                 break
 
-            await human_move_and_click(page, next_action.selector)
+            await page.click(next_action.selector)
             await page.wait_for_load_state("networkidle", timeout=10_000)
             await asyncio.sleep(0.5)
 
+        if page_num >= max_pages:
+            log.warning("heritage.pagination_limit_reached", account=account.external_id)
         log.info(
             "heritage.transactions_extracted",
             account=account.external_id,
@@ -123,8 +181,8 @@ class HeritageBankAdapter(BankAdapter):
         raw = await extractor.extract_balance(page)
         return BalanceData(
             account_external_id=account.external_id,
-            current=float(raw.get("current", 0)),
-            available=float(raw["available"]) if raw.get("available") is not None else None,
+            current=Decimal(str(raw.get("current", 0))),
+            available=Decimal(str(raw["available"])) if raw.get("available") is not None else None,
             currency=raw.get("currency") or account.currency,
             captured_at=datetime.now(UTC),
         )
@@ -143,7 +201,7 @@ class HeritageBankAdapter(BankAdapter):
                     pass
 
             amount_raw = raw.get("amount", 0)
-            amount = float(str(amount_raw).replace(",", "").replace("$", ""))
+            amount = Decimal(str(amount_raw).replace(",", "").replace("$", ""))
 
             return TransactionData(
                 external_id=external_id,
@@ -151,11 +209,11 @@ class HeritageBankAdapter(BankAdapter):
                 description=raw.get("description"),
                 amount=amount,
                 currency=raw.get("currency") or "USD",
-                running_balance=float(raw["running_balance"])
-                if raw.get("running_balance")
+                running_balance=Decimal(str(raw["running_balance"]))
+                if raw.get("running_balance") is not None
                 else None,
                 raw=raw,
             )
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, InvalidOperation):
             log.warning("heritage.txn_parse_error", raw=raw)
             return None

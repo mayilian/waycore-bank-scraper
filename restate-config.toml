@@ -1,0 +1,5 @@
+[admin]
+bind-address = "0.0.0.0:19070"
+
+[ingress]
+bind-address = "0.0.0.0:18080"

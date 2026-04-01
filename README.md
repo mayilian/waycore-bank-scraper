@@ -133,11 +133,11 @@ Layer 3 — Bank adapter              Sequences goals. HeritageBankAdapter
 
 ### Data model highlights
 
-- `NUMERIC(20,4)` for all money columns — never `FLOAT`
+- `Decimal` in Python + `NUMERIC(20,4)` in Postgres for all money columns — no float precision loss
 - `balances` is append-only (never updated) — enables balance history
 - `transactions` uses `UNIQUE(account_id, external_id)` + `ON CONFLICT DO NOTHING` — all syncs are idempotent
 - Multi-tenant schema (`organizations → users → bank_connections → accounts`) — ready for RLS enforcement in production
-- `sync_steps` is the audit trail: every step writes a record; failures include screenshot path and traceback
+- `sync_steps` is the audit trail: each completed step writes a record; failures include screenshot path and traceback
 
 ---
 
@@ -171,6 +171,6 @@ Unknown banks automatically use `GenericBankAdapter` — the LLM discovers the l
 | Database | Docker `postgres:16` | Set `DATABASE_URL` → Neon / RDS |
 | Workflow engine | Docker `restatedev/restate` | Set `RESTATE_ENDPOINT` → Restate Cloud |
 | Screenshots | Local volume | Set `SCREENSHOT_BACKEND=s3` + Cloudflare R2 credentials |
-| Compute | `docker compose up` | `fly deploy` (see `fly.toml`) |
+| Compute | `docker compose up` | `fly deploy` |
 
 No code changes required for any of these migrations.

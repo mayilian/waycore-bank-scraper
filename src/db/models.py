@@ -16,6 +16,7 @@ Designed for future horizontal scaling:
 
 import uuid
 from datetime import datetime
+from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import (
@@ -140,8 +141,8 @@ class Balance(Base):
     account_id: Mapped[str] = mapped_column(
         UUID(as_uuid=False), ForeignKey("accounts.id"), nullable=False, index=True
     )
-    available: Mapped[float | None] = mapped_column(Numeric(20, 4))
-    current: Mapped[float] = mapped_column(Numeric(20, 4), nullable=False)
+    available: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))
+    current: Mapped[Decimal] = mapped_column(Numeric(20, 4), nullable=False)
     currency: Mapped[str] = mapped_column(String(3), nullable=False)
     captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
@@ -163,9 +164,9 @@ class Transaction(Base):
     external_id: Mapped[str] = mapped_column(Text, nullable=False)  # bank's own transaction ID
     posted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     description: Mapped[str | None] = mapped_column(Text)
-    amount: Mapped[float] = mapped_column(Numeric(20, 4), nullable=False)  # negative = debit
+    amount: Mapped[Decimal] = mapped_column(Numeric(20, 4), nullable=False)  # negative = debit
     currency: Mapped[str] = mapped_column(String(3), nullable=False)
-    running_balance: Mapped[float | None] = mapped_column(Numeric(20, 4))
+    running_balance: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))
     raw: Mapped[dict[str, Any] | None] = mapped_column(JSON)  # original scraped payload
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

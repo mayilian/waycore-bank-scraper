@@ -8,6 +8,7 @@ the workflow layer.
 
 from abc import ABC, abstractmethod
 from datetime import datetime
+from decimal import Decimal
 from typing import Any
 
 from playwright.async_api import Page
@@ -23,8 +24,8 @@ class AccountData(BaseModel):
 
 class BalanceData(BaseModel):
     account_external_id: str
-    current: float
-    available: float | None = None
+    current: Decimal
+    available: Decimal | None = None
     currency: str = "USD"
     captured_at: datetime
 
@@ -33,9 +34,9 @@ class TransactionData(BaseModel):
     external_id: str
     posted_at: datetime | None = None
     description: str | None = None
-    amount: float  # negative = debit
+    amount: Decimal  # negative = debit
     currency: str = "USD"
-    running_balance: float | None = None
+    running_balance: Decimal | None = None
     raw: dict[str, Any] | None = None
 
 
@@ -70,9 +71,17 @@ class BankAdapter(ABC):
         """Return all accounts visible in the authenticated session."""
 
     @abstractmethod
+    async def navigate_to_account(self, page: Page, account: AccountData) -> None:
+        """Navigate to a specific account's detail page before extraction."""
+
+    @abstractmethod
     async def get_transactions(self, page: Page, account: AccountData) -> list[TransactionData]:
-        """Return the full transaction history for one account."""
+        """Return the full transaction history for one account.
+        Caller must call navigate_to_account() first.
+        """
 
     @abstractmethod
     async def get_balance(self, page: Page, account: AccountData) -> BalanceData:
-        """Return the current balance for one account."""
+        """Return the current balance for one account.
+        Caller must call navigate_to_account() first.
+        """

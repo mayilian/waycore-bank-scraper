@@ -1,7 +1,7 @@
 """LLM-powered DOM extraction via focused per-goal calls.
 
 Each goal is a separate Claude call with a task-specific system prompt.
-The DOM summary sent to the LLM is trimmed to ~2k tokens — not raw HTML.
+The DOM summary sent to the LLM is trimmed to ~4k tokens — not raw HTML.
 Claude returns structured JSON; we validate with Pydantic.
 
 This module is the intelligence layer. The execution layer (Playwright)
@@ -19,29 +19,33 @@ from anthropic import AsyncAnthropic
 from playwright.async_api import Page
 from pydantic import BaseModel
 
-from src.core.config import settings
 from src.core.logging import get_logger
 
 log = get_logger(__name__)
-_client = AsyncAnthropic(api_key=settings.anthropic_api_key)
+_client: AsyncAnthropic | None = None
+
+
+def _get_client() -> AsyncAnthropic:
+    global _client
+    if _client is None:
+        from src.core.config import settings
+
+        _client = AsyncAnthropic(api_key=settings.anthropic_api_key)
+    return _client
+
 
 _MODEL = "claude-sonnet-4-6"
-_MAX_DOM_CHARS = 6_000  # ~2k tokens
+_MAX_DOM_CHARS = 12_000  # ~4k tokens — allows larger transaction tables
 
 
 class ActionType(StrEnum):
     CLICK = "click"
-    FILL = "fill"
-    NAVIGATE = "navigate"
     DONE = "done"
-    FAILED = "failed"
 
 
 class LLMAction(BaseModel):
     action: ActionType
-    selector: str | None = None  # CSS selector for click/fill
-    value: str | None = None  # text for fill, URL for navigate
-    reason: str | None = None  # LLM's brief explanation
+    selector: str | None = None
 
 
 # ── DOM helpers ───────────────────────────────────────────────────────────────
@@ -49,11 +53,11 @@ class LLMAction(BaseModel):
 
 async def _dom_summary(page: Page) -> str:
     """Extract a compact, token-efficient representation of the visible DOM."""
-    raw: str = await page.evaluate("""() => {
+    raw: Any = await page.evaluate("""() => {
         const els = document.querySelectorAll(
             'input, button, a, select, textarea, [role="button"], table, th, td, h1, h2, h3, label, form'
         );
-        return Array.from(els).slice(0, 120).map(el => {
+        return Array.from(els).slice(0, 250).map(el => {
             const attrs = {};
             for (const a of el.attributes) attrs[a.name] = a.value;
             return {
@@ -63,7 +67,8 @@ async def _dom_summary(page: Page) -> str:
             };
         });
     }""")
-    return raw[:_MAX_DOM_CHARS]
+    # page.evaluate returns a list of dicts; serialize to JSON for the LLM
+    return json.dumps(raw)[:_MAX_DOM_CHARS]
 
 
 async def _screenshot_b64(page: Page) -> str:
@@ -74,7 +79,9 @@ async def _screenshot_b64(page: Page) -> str:
 # ── Core inference ────────────────────────────────────────────────────────────
 
 
-async def _ask(system: str, user_text: str, screenshot_b64: str | None) -> str:
+async def _ask(
+    system: str, user_text: str, screenshot_b64: str | None, max_tokens: int = 1024
+) -> str:
     content: list[Any] = []
     if screenshot_b64:
         content.append(
@@ -85,13 +92,16 @@ async def _ask(system: str, user_text: str, screenshot_b64: str | None) -> str:
         )
     content.append({"type": "text", "text": user_text})
 
-    msg = await _client.messages.create(
+    client = _get_client()
+    msg = await client.messages.create(
         model=_MODEL,
-        max_tokens=512,
+        max_tokens=max_tokens,
         system=system,
         messages=[{"role": "user", "content": content}],
     )
-    return msg.content[0].text  # type: ignore[union-attr]
+    if not msg.content or not hasattr(msg.content[0], "text"):
+        raise ValueError("LLM returned empty or non-text response")
+    return msg.content[0].text
 
 
 # ── Per-goal extraction functions ─────────────────────────────────────────────
@@ -137,10 +147,11 @@ async def detect_post_login_state(page: Page) -> str:
 
     if state not in ("logged_in", "otp_required", "login_failed"):
         log.warning("llm.unexpected_state", raw=result)
-        # Default: if we see an OTP-related word, treat as otp_required
         if any(w in result.lower() for w in ("otp", "code", "verification", "one-time")):
             return "otp_required"
-        return "logged_in"  # Optimistic default
+        # Fail explicitly rather than optimistically assuming success —
+        # scraping an unauthenticated page produces garbage data.
+        return "login_failed"
     return state
 
 
@@ -206,7 +217,7 @@ async def extract_transactions_from_page(page: Page) -> list[dict[str, Any]]:
         "Include ALL rows in the table, do not truncate."
     )
     user = f"DOM summary:\n{dom}"
-    raw = await _ask(system, user, screenshot)
+    raw = await _ask(system, user, screenshot, max_tokens=8192)
 
     try:
         data = json.loads(raw)
@@ -216,6 +227,32 @@ async def extract_transactions_from_page(page: Page) -> list[dict[str, Any]]:
         if match:
             return json.loads(match.group())  # type: ignore[no-any-return]
         return []
+
+
+async def find_account_link(page: Page, account_external_id: str) -> LLMAction:
+    """Return a click action targeting the link/button for a specific account."""
+    dom = await _dom_summary(page)
+    screenshot = await _screenshot_b64(page)
+
+    system = (
+        "You are a web automation assistant on a banking dashboard. "
+        "Find the clickable link, row, or button that navigates to the detail page "
+        f"for account '{account_external_id}'. "
+        "Return ONLY JSON with keys: "
+        "action ('click' if found, 'done' if the page already shows this account's details), "
+        "selector (CSS selector for the element, or null)."
+    )
+    user = f"DOM summary:\n{dom}\n\nTarget account: {account_external_id}"
+    raw = await _ask(system, user, screenshot)
+
+    try:
+        data = json.loads(raw)
+        return LLMAction(
+            action=ActionType(data.get("action", "done")),
+            selector=data.get("selector"),
+        )
+    except (json.JSONDecodeError, ValueError):
+        return LLMAction(action=ActionType.DONE)
 
 
 async def check_has_next_page(page: Page) -> LLMAction:

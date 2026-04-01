@@ -1,9 +1,9 @@
 import asyncio
 from logging.config import fileConfig
 
-from alembic import context
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from alembic import context
 from src.db.models import Base
 
 config = context.config
@@ -33,6 +33,8 @@ def do_run_migrations(connection):  # type: ignore[no-untyped-def]
 
 async def run_migrations_online() -> None:
     url = config.get_main_option("sqlalchemy.url")
+    if not url:
+        raise RuntimeError("sqlalchemy.url not set in alembic config")
     connectable = create_async_engine(url)
     async with connectable.connect() as connection:
         await connection.run_sync(do_run_migrations)

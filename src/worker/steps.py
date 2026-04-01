@@ -3,7 +3,7 @@
 Each function is a self-contained unit of work:
   - Opens a fresh browser and restores session cookies
   - Performs one logical phase of the sync
-  - Writes sync_steps records (running → success/failed)
+  - Writes a sync_steps record on completion (success or failed)
   - Saves a screenshot on failure
   - Returns JSON-serializable data for Restate to journal
 
@@ -14,7 +14,7 @@ They are plain async functions — Restate calls them as durable side effects.
 import traceback
 import uuid
 from datetime import UTC, datetime
-from typing import Any, cast
+from typing import Any
 
 from playwright.async_api import Page, StorageState
 from sqlalchemy import select
@@ -88,9 +88,9 @@ async def _capture_failure(
 # ── Step: login ────────────────────────────────────────────────────────────────
 
 
-async def step_login(connection_id: str, job_id: str, otp: str | None) -> StorageState:
+async def step_login(connection_id: str, job_id: str, otp: str | None) -> dict[str, Any]:
     """Navigate to the bank, log in, handle OTP if provided.
-    Returns browser storage_state dict (cookies + localStorage) for subsequent steps.
+    Returns {storage_state, post_login_url} for subsequent steps.
     The OTP is decrypted from DB for static mode; passed directly for webhook mode.
     """
     started_at = datetime.now(UTC)
@@ -122,6 +122,7 @@ async def step_login(connection_id: str, job_id: str, otp: str | None) -> Storag
                 await adapter.submit_otp(page, otp)
 
             state: StorageState = await page.context.storage_state()
+            post_login_url = page.url
         except Exception as exc:
             await _capture_failure(page, job_id, "login", exc, started_at)
             raise
@@ -134,14 +135,14 @@ async def step_login(connection_id: str, job_id: str, otp: str | None) -> Storag
         started_at=started_at,
     )
     log.info("step.login.success", job_id=job_id)
-    return state
+    return {"storage_state": state, "post_login_url": post_login_url}
 
 
 # ── Step: get_accounts ─────────────────────────────────────────────────────────
 
 
 async def step_get_accounts(
-    connection_id: str, job_id: str, session_state: StorageState
+    connection_id: str, job_id: str, session_state: StorageState, post_login_url: str
 ) -> list[dict[str, Any]]:
     """Navigate to the dashboard and extract all accounts.
     Returns list of AccountData dicts (serializable for Restate journal).
@@ -154,12 +155,11 @@ async def step_get_accounts(
         conn = await db.get(BankConnection, connection_id)
         if not conn:
             raise ValueError(f"BankConnection {connection_id} not found")
-        login_url = conn.login_url
         bank_slug = conn.bank_slug
 
     async with stealth_browser(storage_state=session_state) as (_browser, page):
         try:
-            await page.goto(login_url, wait_until="networkidle", timeout=20_000)
+            await page.goto(post_login_url, wait_until="networkidle", timeout=20_000)
             adapter = get_adapter(bank_slug)
             accounts = await adapter.get_accounts(page)
         except Exception as exc:
@@ -210,7 +210,11 @@ async def step_get_accounts(
 
 
 async def step_get_transactions(
-    connection_id: str, job_id: str, session_state: StorageState, account_dict: dict[str, Any]
+    connection_id: str,
+    job_id: str,
+    session_state: StorageState,
+    account_dict: dict[str, Any],
+    post_login_url: str,
 ) -> int:
     """Extract all transactions for one account and persist to DB.
     Returns count of transactions stored.
@@ -230,43 +234,47 @@ async def step_get_transactions(
         conn = await db.get(BankConnection, connection_id)
         if not conn:
             raise ValueError(f"BankConnection {connection_id} not found")
-        login_url = conn.login_url
         bank_slug = conn.bank_slug
 
     async with stealth_browser(storage_state=session_state) as (_browser, page):
         try:
-            await page.goto(login_url, wait_until="networkidle", timeout=20_000)
+            await page.goto(post_login_url, wait_until="networkidle", timeout=20_000)
             adapter = get_adapter(bank_slug)
+            await adapter.navigate_to_account(page, account)
             transactions = await adapter.get_transactions(page, account)
         except Exception as exc:
             await _capture_failure(page, job_id, step_name, exc, started_at)
             raise
 
-    # Persist — ON CONFLICT DO NOTHING (idempotent re-runs)
+    # Persist — batch insert with ON CONFLICT DO NOTHING (idempotent re-runs)
     inserted = 0
-    async with get_session() as db:
-        for txn in transactions:
+    if transactions:
+        rows = [
+            {
+                "id": str(uuid.uuid4()),
+                "account_id": account_db_id,
+                "external_id": txn.external_id,
+                "posted_at": txn.posted_at,
+                "description": txn.description,
+                "amount": txn.amount,
+                "currency": txn.currency,
+                "running_balance": txn.running_balance,
+                "raw": txn.raw,
+            }
+            for txn in transactions
+        ]
+        async with get_session() as db:
             stmt = (
                 pg_insert(Transaction)
-                .values(
-                    id=str(uuid.uuid4()),
-                    account_id=account_db_id,
-                    external_id=txn.external_id,
-                    posted_at=txn.posted_at,
-                    description=txn.description,
-                    amount=txn.amount,
-                    currency=txn.currency,
-                    running_balance=txn.running_balance,
-                    raw=txn.raw,
-                )
+                .values(rows)
                 .on_conflict_do_nothing(index_elements=["account_id", "external_id"])
             )
-            result = cast(CursorResult[Any], await db.execute(stmt))
-            inserted += result.rowcount
+            cursor_result: CursorResult[Any] = await db.execute(stmt)  # type: ignore[assignment]
+            inserted = cursor_result.rowcount
 
-        job = await db.get(SyncJob, job_id)
-        if job:
-            job.transactions_synced = (job.transactions_synced or 0) + inserted
+            job = await db.get(SyncJob, job_id)
+            if job:
+                job.transactions_synced = (job.transactions_synced or 0) + inserted
 
     await _write_step(
         job_id,
@@ -285,7 +293,11 @@ async def step_get_transactions(
 
 
 async def step_get_balance(
-    connection_id: str, job_id: str, session_state: StorageState, account_dict: dict[str, Any]
+    connection_id: str,
+    job_id: str,
+    session_state: StorageState,
+    account_dict: dict[str, Any],
+    post_login_url: str,
 ) -> dict[str, Any]:
     """Extract and persist the current balance for one account."""
     account = AccountData(
@@ -302,13 +314,13 @@ async def step_get_balance(
         conn = await db.get(BankConnection, connection_id)
         if not conn:
             raise ValueError(f"BankConnection {connection_id} not found")
-        login_url = conn.login_url
         bank_slug = conn.bank_slug
 
     async with stealth_browser(storage_state=session_state) as (_browser, page):
         try:
-            await page.goto(login_url, wait_until="networkidle", timeout=20_000)
+            await page.goto(post_login_url, wait_until="networkidle", timeout=20_000)
             adapter = get_adapter(bank_slug)
+            await adapter.navigate_to_account(page, account)
             balance = await adapter.get_balance(page, account)
         except Exception as exc:
             await _capture_failure(page, job_id, step_name, exc, started_at)
@@ -330,10 +342,10 @@ async def step_get_balance(
         job_id,
         step_name,
         "success",
-        output={"current": balance.current, "currency": balance.currency},
+        output={"current": str(balance.current), "currency": balance.currency},
         started_at=started_at,
     )
-    return {"current": balance.current, "currency": balance.currency}
+    return {"current": str(balance.current), "currency": balance.currency}
 
 
 # ── Step: finalise ─────────────────────────────────────────────────────────────

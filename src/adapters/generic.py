@@ -6,6 +6,7 @@ Use this for any bank not in ADAPTER_REGISTRY.
 
 import asyncio
 from datetime import UTC, datetime
+from decimal import Decimal, InvalidOperation
 
 from playwright.async_api import Page
 
@@ -74,11 +75,26 @@ class GenericBankAdapter(BankAdapter):
         log.info("generic.accounts_found", count=len(accounts))
         return accounts
 
+    async def navigate_to_account(self, page: Page, account: AccountData) -> None:
+        nav = await extractor.find_account_link(page, account.external_id)
+        if nav.action == "click" and nav.selector:
+            await human_move_and_click(page, nav.selector)
+            await page.wait_for_load_state("networkidle", timeout=15_000)
+            log.debug("generic.navigated_to_account", account=account.external_id)
+        elif nav.action == "done":
+            log.debug("generic.already_on_account", account=account.external_id)
+        else:
+            raise RuntimeError(
+                f"Could not navigate to account {account.external_id}: "
+                f"LLM returned action={nav.action} selector={nav.selector}"
+            )
+
     async def get_transactions(self, page: Page, account: AccountData) -> list[TransactionData]:
         all_transactions: list[TransactionData] = []
         page_num = 0
+        max_pages = 50
 
-        while True:
+        while page_num < max_pages:
             page_num += 1
             raw_txns = await extractor.extract_transactions_from_page(page)
             for raw in raw_txns:
@@ -97,17 +113,17 @@ class GenericBankAdapter(BankAdapter):
                             external_id=external_id,
                             posted_at=posted_at,
                             description=raw.get("description"),
-                            amount=float(
+                            amount=Decimal(
                                 str(raw.get("amount", 0)).replace(",", "").replace("$", "")
                             ),
                             currency=raw.get("currency") or "USD",
-                            running_balance=float(raw["running_balance"])
-                            if raw.get("running_balance")
+                            running_balance=Decimal(str(raw["running_balance"]))
+                            if raw.get("running_balance") is not None
                             else None,
                             raw=raw,
                         )
                     )
-                except (ValueError, TypeError):
+                except (ValueError, TypeError, InvalidOperation):
                     log.warning("generic.txn_parse_error", raw=raw)
 
             next_action = await extractor.check_has_next_page(page)
@@ -118,6 +134,8 @@ class GenericBankAdapter(BankAdapter):
             await page.wait_for_load_state("networkidle", timeout=10_000)
             await asyncio.sleep(0.5)
 
+        if page_num >= max_pages:
+            log.warning("generic.pagination_limit_reached", account=account.external_id)
         log.info(
             "generic.transactions_extracted",
             account=account.external_id,
@@ -129,8 +147,8 @@ class GenericBankAdapter(BankAdapter):
         raw = await extractor.extract_balance(page)
         return BalanceData(
             account_external_id=account.external_id,
-            current=float(raw.get("current", 0)),
-            available=float(raw["available"]) if raw.get("available") is not None else None,
+            current=Decimal(str(raw.get("current", 0))),
+            available=Decimal(str(raw["available"])) if raw.get("available") is not None else None,
             currency=raw.get("currency") or account.currency,
             captured_at=datetime.now(UTC),
         )

@@ -15,7 +15,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from playwright.async_api import Browser, BrowserContext, Page, StorageState, async_playwright
-from playwright_stealth import stealth_async
+from playwright_stealth import Stealth
 
 from src.core.config import settings
 
@@ -54,9 +54,10 @@ async def stealth_browser(
         if storage_state:
             ctx_kwargs["storage_state"] = storage_state
 
+        stealth = Stealth()
         context: BrowserContext = await browser.new_context(**ctx_kwargs)
+        await stealth.apply_stealth_async(context)
         page = await context.new_page()
-        await stealth_async(page)
 
         try:
             yield browser, page
