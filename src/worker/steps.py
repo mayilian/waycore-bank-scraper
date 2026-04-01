@@ -140,7 +140,9 @@ async def step_login(connection_id: str, job_id: str, otp: str | None) -> Storag
 # ── Step: get_accounts ─────────────────────────────────────────────────────────
 
 
-async def step_get_accounts(connection_id: str, job_id: str, session_state: StorageState) -> list[dict[str, Any]]:
+async def step_get_accounts(
+    connection_id: str, job_id: str, session_state: StorageState
+) -> list[dict[str, Any]]:
     """Navigate to the dashboard and extract all accounts.
     Returns list of AccountData dicts (serializable for Restate journal).
     Persists accounts to DB.
