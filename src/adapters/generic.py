@@ -43,7 +43,11 @@ class GenericBankAdapter(BankAdapter):
 
         # Try common submit selectors; raise if none work
         submitted = False
-        for submit_sel in ("button[type='submit']", "button:has-text('Submit')", "button:has-text('Verify')"):
+        for submit_sel in (
+            "button[type='submit']",
+            "button:has-text('Submit')",
+            "button:has-text('Verify')",
+        ):
             try:
                 await page.locator(submit_sel).first.click(timeout=2_000)
                 submitted = True
@@ -93,9 +97,13 @@ class GenericBankAdapter(BankAdapter):
                             external_id=external_id,
                             posted_at=posted_at,
                             description=raw.get("description"),
-                            amount=float(str(raw.get("amount", 0)).replace(",", "").replace("$", "")),
+                            amount=float(
+                                str(raw.get("amount", 0)).replace(",", "").replace("$", "")
+                            ),
                             currency=raw.get("currency") or "USD",
-                            running_balance=float(raw["running_balance"]) if raw.get("running_balance") else None,
+                            running_balance=float(raw["running_balance"])
+                            if raw.get("running_balance")
+                            else None,
                             raw=raw,
                         )
                     )
@@ -110,7 +118,11 @@ class GenericBankAdapter(BankAdapter):
             await page.wait_for_load_state("networkidle", timeout=10_000)
             await asyncio.sleep(0.5)
 
-        log.info("generic.transactions_extracted", account=account.external_id, count=len(all_transactions))
+        log.info(
+            "generic.transactions_extracted",
+            account=account.external_id,
+            count=len(all_transactions),
+        )
         return all_transactions
 
     async def get_balance(self, page: Page, account: AccountData) -> BalanceData:

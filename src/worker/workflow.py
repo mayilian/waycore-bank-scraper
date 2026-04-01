@@ -25,10 +25,10 @@ sync_workflow = restate.Workflow("SyncBankWorkflow")
 @sync_workflow.main()
 async def run(ctx: WorkflowContext, req: dict) -> dict:
     """Main workflow handler. req keys:
-      - job_id: str
-      - connection_id: str
-      - otp_mode: str  ("static" | "totp" | "webhook")
-      - otp: str | None  (provided for static/totp modes)
+    - job_id: str
+    - connection_id: str
+    - otp_mode: str  ("static" | "totp" | "webhook")
+    - otp: str | None  (provided for static/totp modes)
     """
     job_id: str = req["job_id"]
     connection_id: str = req["connection_id"]

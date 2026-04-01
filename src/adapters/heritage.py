@@ -150,7 +150,9 @@ class HeritageBankAdapter(BankAdapter):
                 description=raw.get("description"),
                 amount=amount,
                 currency=raw.get("currency") or "USD",
-                running_balance=float(raw["running_balance"]) if raw.get("running_balance") else None,
+                running_balance=float(raw["running_balance"])
+                if raw.get("running_balance")
+                else None,
                 raw=raw,
             )
         except (ValueError, TypeError):

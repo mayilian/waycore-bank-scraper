@@ -33,6 +33,7 @@ log = get_logger(__name__)
 
 # ── Shared helpers ─────────────────────────────────────────────────────────────
 
+
 async def _write_step(
     job_id: str,
     name: str,
@@ -84,6 +85,7 @@ async def _capture_failure(
 
 # ── Step: login ────────────────────────────────────────────────────────────────
 
+
 async def step_login(connection_id: str, job_id: str, otp: str | None) -> dict:
     """Navigate to the bank, log in, handle OTP if provided.
     Returns browser storage_state dict (cookies + localStorage) for subsequent steps.
@@ -123,7 +125,9 @@ async def step_login(connection_id: str, job_id: str, otp: str | None) -> dict:
             raise
 
     await _write_step(
-        job_id, "login", "success",
+        job_id,
+        "login",
+        "success",
         output={"cookies": len(state.get("cookies", []))},
         started_at=started_at,
     )
@@ -133,9 +137,8 @@ async def step_login(connection_id: str, job_id: str, otp: str | None) -> dict:
 
 # ── Step: get_accounts ─────────────────────────────────────────────────────────
 
-async def step_get_accounts(
-    connection_id: str, job_id: str, session_state: dict
-) -> list[dict]:
+
+async def step_get_accounts(connection_id: str, job_id: str, session_state: dict) -> list[dict]:
     """Navigate to the dashboard and extract all accounts.
     Returns list of AccountData dicts (serializable for Restate journal).
     Persists accounts to DB.
@@ -189,7 +192,9 @@ async def step_get_accounts(
             job.accounts_synced = len(accounts)
 
     await _write_step(
-        job_id, "get_accounts", "success",
+        job_id,
+        "get_accounts",
+        "success",
         output={"count": len(accounts), "account_ids": [a["db_id"] for a in account_dicts]},
         started_at=started_at,
     )
@@ -198,6 +203,7 @@ async def step_get_accounts(
 
 
 # ── Step: get_transactions ─────────────────────────────────────────────────────
+
 
 async def step_get_transactions(
     connection_id: str, job_id: str, session_state: dict, account_dict: dict
@@ -259,14 +265,20 @@ async def step_get_transactions(
             job.transactions_synced = (job.transactions_synced or 0) + inserted
 
     await _write_step(
-        job_id, step_name, "success",
-        output={"total": len(transactions), "inserted": inserted}, started_at=started_at,
+        job_id,
+        step_name,
+        "success",
+        output={"total": len(transactions), "inserted": inserted},
+        started_at=started_at,
     )
-    log.info("step.transactions.success", job_id=job_id, account=account.external_id, inserted=inserted)
+    log.info(
+        "step.transactions.success", job_id=job_id, account=account.external_id, inserted=inserted
+    )
     return inserted
 
 
 # ── Step: get_balance ──────────────────────────────────────────────────────────
+
 
 async def step_get_balance(
     connection_id: str, job_id: str, session_state: dict, account_dict: dict
@@ -311,7 +323,9 @@ async def step_get_balance(
         )
 
     await _write_step(
-        job_id, step_name, "success",
+        job_id,
+        step_name,
+        "success",
         output={"current": balance.current, "currency": balance.currency},
         started_at=started_at,
     )
@@ -319,6 +333,7 @@ async def step_get_balance(
 
 
 # ── Step: finalise ─────────────────────────────────────────────────────────────
+
 
 async def step_finalise(job_id: str) -> None:
     started_at = datetime.now(UTC)

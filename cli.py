@@ -68,7 +68,9 @@ def sync(
     bank_url: Annotated[str, typer.Option("--bank-url", help="Bank login URL")],
     username: Annotated[str, typer.Option("--username", "-u")],
     password: Annotated[str, typer.Option("--password", "-p")],
-    otp: Annotated[str | None, typer.Option("--otp", help="OTP code (omit for webhook mode)")] = None,
+    otp: Annotated[
+        str | None, typer.Option("--otp", help="OTP code (omit for webhook mode)")
+    ] = None,
     otp_mode: Annotated[str, typer.Option("--otp-mode")] = "static",
 ) -> None:
     """Trigger a bank sync and stream live step trace to the terminal."""
@@ -85,24 +87,28 @@ async def _sync(
     connection_id = str(uuid.uuid4())
 
     async with get_session() as db:
-        db.add(BankConnection(
-            id=connection_id,
-            user_id=_DEFAULT_USER_ID,
-            bank_slug=bank_slug,
-            bank_name=bank_slug.replace("_", " ").title(),
-            login_url=bank_url,
-            username_enc=encrypt(username),
-            password_enc=encrypt(password),
-            otp_mode=otp_mode,
-            otp_value_enc=encrypt(otp) if otp else None,
-        ))
-        db.add(SyncJob(
-            id=job_id,
-            restate_id=job_id,
-            connection_id=connection_id,
-            status="pending",
-            started_at=datetime.now(UTC),
-        ))
+        db.add(
+            BankConnection(
+                id=connection_id,
+                user_id=_DEFAULT_USER_ID,
+                bank_slug=bank_slug,
+                bank_name=bank_slug.replace("_", " ").title(),
+                login_url=bank_url,
+                username_enc=encrypt(username),
+                password_enc=encrypt(password),
+                otp_mode=otp_mode,
+                otp_value_enc=encrypt(otp) if otp else None,
+            )
+        )
+        db.add(
+            SyncJob(
+                id=job_id,
+                restate_id=job_id,
+                connection_id=connection_id,
+                status="pending",
+                started_at=datetime.now(UTC),
+            )
+        )
 
     console.print(f"[bold green]✓[/] Job created: [cyan]{job_id}[/]")
     console.print(f"  Bank: [cyan]{bank_slug}[/]  URL: {bank_url}\n")
@@ -171,7 +177,9 @@ async def _poll_job(job_id: str) -> None:
             raise typer.Exit(1)
 
         if job.status == "awaiting_otp":
-            console.print("\n[yellow]⏸ Waiting for OTP...[/] Run: waycore otp --job-id <id> --code <code>")
+            console.print(
+                "\n[yellow]⏸ Waiting for OTP...[/] Run: waycore otp --job-id <id> --code <code>"
+            )
 
         await asyncio.sleep(2)
 
@@ -207,9 +215,7 @@ def jobs(limit: Annotated[int, typer.Option()] = 20) -> None:
 
 async def _list_jobs(limit: int) -> None:
     async with get_session() as db:
-        result = await db.execute(
-            select(SyncJob).order_by(SyncJob.created_at.desc()).limit(limit)
-        )
+        result = await db.execute(select(SyncJob).order_by(SyncJob.created_at.desc()).limit(limit))
         job_list = result.scalars().all()
 
     table = Table("Job ID", "Status", "Accounts", "Transactions", "Started", "Completed")
@@ -250,7 +256,9 @@ async def _list_transactions(account_id: str | None, limit: int) -> None:
 
     table = Table("Date", "Description", "Amount", "Currency", "Running Balance")
     for txn in txn_list:
-        amount_fmt = f"[red]{txn.amount:.2f}[/]" if txn.amount < 0 else f"[green]{txn.amount:.2f}[/]"
+        amount_fmt = (
+            f"[red]{txn.amount:.2f}[/]" if txn.amount < 0 else f"[green]{txn.amount:.2f}[/]"
+        )
         table.add_row(
             txn.posted_at.strftime("%Y-%m-%d") if txn.posted_at else "—",
             (txn.description or "")[:50],
@@ -274,7 +282,13 @@ async def _list_accounts() -> None:
 
     table = Table("DB ID", "External ID", "Name", "Type", "Currency")
     for acc in account_list:
-        table.add_row(acc.id[:8] + "…", acc.external_id, acc.name or "—", acc.account_type or "—", acc.currency)
+        table.add_row(
+            acc.id[:8] + "…",
+            acc.external_id,
+            acc.name or "—",
+            acc.account_type or "—",
+            acc.currency,
+        )
     console.print(table)
 
 

@@ -45,6 +45,7 @@ class LLMAction(BaseModel):
 
 # ── DOM helpers ───────────────────────────────────────────────────────────────
 
+
 async def _dom_summary(page: Page) -> str:
     """Extract a compact, token-efficient representation of the visible DOM."""
     raw: str = await page.evaluate("""() => {
@@ -71,13 +72,16 @@ async def _screenshot_b64(page: Page) -> str:
 
 # ── Core inference ────────────────────────────────────────────────────────────
 
+
 async def _ask(system: str, user_text: str, screenshot_b64: str | None) -> str:
     content: list = []
     if screenshot_b64:
-        content.append({
-            "type": "image",
-            "source": {"type": "base64", "media_type": "image/png", "data": screenshot_b64},
-        })
+        content.append(
+            {
+                "type": "image",
+                "source": {"type": "base64", "media_type": "image/png", "data": screenshot_b64},
+            }
+        )
     content.append({"type": "text", "text": user_text})
 
     msg = await _client.messages.create(
@@ -90,6 +94,7 @@ async def _ask(system: str, user_text: str, screenshot_b64: str | None) -> str:
 
 
 # ── Per-goal extraction functions ─────────────────────────────────────────────
+
 
 async def find_login_fields(page: Page) -> dict[str, str]:
     """Return {username_selector, password_selector, submit_selector}."""

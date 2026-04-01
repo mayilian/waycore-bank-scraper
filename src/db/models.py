@@ -162,9 +162,7 @@ class Transaction(Base):
     external_id: Mapped[str] = mapped_column(Text, nullable=False)  # bank's own transaction ID
     posted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     description: Mapped[str | None] = mapped_column(Text)
-    amount: Mapped[float] = mapped_column(
-        Numeric(20, 4), nullable=False
-    )  # negative = debit
+    amount: Mapped[float] = mapped_column(Numeric(20, 4), nullable=False)  # negative = debit
     currency: Mapped[str] = mapped_column(String(3), nullable=False)
     running_balance: Mapped[float | None] = mapped_column(Numeric(20, 4))
     raw: Mapped[dict | None] = mapped_column(JSON)  # original scraped payload
