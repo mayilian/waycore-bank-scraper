@@ -1,0 +1,64 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: waycore
+      POSTGRES_USER: waycore
+      POSTGRES_PASSWORD: waycore
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U waycore"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  restate:
+    image: docker.io/restatedev/restate:latest
+    ports:
+      - "8080:8080"   # ingress (workflow triggers + signals)
+      - "9070:9070"   # admin (deployment registration)
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9070/health || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  worker:
+    build: .
+    command: uv run hypercorn "src.worker.app:app" --bind "0.0.0.0:9000"
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://waycore:waycore@postgres:5432/waycore
+    ports:
+      - "9000:9000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      restate:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9000/restate/health || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - screenshots:/app/data/screenshots
+
+  # Registers the worker service with Restate after both are healthy
+  register:
+    image: curlimages/curl:latest
+    depends_on:
+      worker:
+        condition: service_healthy
+    command: >
+      curl -sf -X POST http://restate:9070/deployments
+      -H "Content-Type: application/json"
+      -d '{"uri": "http://worker:9000"}'
+    restart: "no"
+
+volumes:
+  postgres_data:
+  screenshots:

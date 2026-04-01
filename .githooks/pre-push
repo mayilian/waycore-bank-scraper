@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -e
+
+echo "→ ruff check..."
+uv run ruff check src/ cli.py
+
+echo "→ ruff format check..."
+uv run ruff format --check src/ cli.py
+
+echo "→ mypy..."
+uv run mypy src/ cli.py
+
+echo "✓ all checks passed"
