@@ -8,6 +8,7 @@ the workflow layer.
 
 from abc import ABC, abstractmethod
 from datetime import datetime
+from typing import Any
 
 from playwright.async_api import Page
 from pydantic import BaseModel
@@ -35,7 +36,7 @@ class TransactionData(BaseModel):
     amount: float  # negative = debit
     currency: str = "USD"
     running_balance: float | None = None
-    raw: dict | None = None
+    raw: dict[str, Any] | None = None
 
 
 class BankAdapter(ABC):

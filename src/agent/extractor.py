@@ -13,6 +13,7 @@ import base64
 import json
 import re
 from enum import StrEnum
+from typing import Any
 
 from anthropic import AsyncAnthropic
 from playwright.async_api import Page
@@ -74,7 +75,7 @@ async def _screenshot_b64(page: Page) -> str:
 
 
 async def _ask(system: str, user_text: str, screenshot_b64: str | None) -> str:
-    content: list = []
+    content: list[Any] = []
     if screenshot_b64:
         content.append(
             {
@@ -111,12 +112,12 @@ async def find_login_fields(page: Page) -> dict[str, str]:
     raw = await _ask(system, user, screenshot)
 
     try:
-        return json.loads(raw)
+        return json.loads(raw)  # type: ignore[no-any-return]
     except json.JSONDecodeError:
         # Extract JSON from markdown code block if present
         match = re.search(r"\{.*\}", raw, re.DOTALL)
         if match:
-            return json.loads(match.group())
+            return json.loads(match.group())  # type: ignore[no-any-return]
         raise ValueError(f"Could not parse login fields from LLM response: {raw}")
 
 
@@ -156,12 +157,12 @@ async def find_otp_field(page: Page) -> str:
     raw = await _ask(system, user, screenshot)
 
     try:
-        return json.loads(raw)["selector"]
+        return json.loads(raw)["selector"]  # type: ignore[no-any-return]
     except (json.JSONDecodeError, KeyError):
         return "input[type='text'], input[type='number'], input[name*='otp'], input[name*='code']"
 
 
-async def extract_accounts(page: Page) -> list[dict]:
+async def extract_accounts(page: Page) -> list[dict[str, Any]]:
     """Return list of {external_id, name, account_type, currency} dicts."""
     dom = await _dom_summary(page)
     screenshot = await _screenshot_b64(page)
@@ -183,11 +184,11 @@ async def extract_accounts(page: Page) -> list[dict]:
     except json.JSONDecodeError:
         match = re.search(r"\[.*\]", raw, re.DOTALL)
         if match:
-            return json.loads(match.group())
+            return json.loads(match.group())  # type: ignore[no-any-return]
         return []
 
 
-async def extract_transactions_from_page(page: Page) -> list[dict]:
+async def extract_transactions_from_page(page: Page) -> list[dict[str, Any]]:
     """Extract all transactions visible in the current page/view."""
     dom = await _dom_summary(page)
     screenshot = await _screenshot_b64(page)
@@ -213,7 +214,7 @@ async def extract_transactions_from_page(page: Page) -> list[dict]:
     except json.JSONDecodeError:
         match = re.search(r"\[.*\]", raw, re.DOTALL)
         if match:
-            return json.loads(match.group())
+            return json.loads(match.group())  # type: ignore[no-any-return]
         return []
 
 
@@ -242,7 +243,7 @@ async def check_has_next_page(page: Page) -> LLMAction:
         return LLMAction(action=ActionType.DONE)
 
 
-async def extract_balance(page: Page) -> dict:
+async def extract_balance(page: Page) -> dict[str, Any]:
     """Return {current, available, currency} for the current account view."""
     dom = await _dom_summary(page)
     screenshot = await _screenshot_b64(page)
@@ -257,9 +258,9 @@ async def extract_balance(page: Page) -> dict:
     raw = await _ask(system, user, screenshot)
 
     try:
-        return json.loads(raw)
+        return json.loads(raw)  # type: ignore[no-any-return]
     except json.JSONDecodeError:
         match = re.search(r"\{.*\}", raw, re.DOTALL)
         if match:
-            return json.loads(match.group())
+            return json.loads(match.group())  # type: ignore[no-any-return]
         return {"current": 0.0, "available": None, "currency": "USD"}

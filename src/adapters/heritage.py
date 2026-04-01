@@ -11,6 +11,7 @@ URL: https://demo-bank-2.vercel.app/
 
 import asyncio
 from datetime import UTC, datetime
+from typing import Any
 
 from playwright.async_api import Page
 
@@ -128,7 +129,7 @@ class HeritageBankAdapter(BankAdapter):
             captured_at=datetime.now(UTC),
         )
 
-    def _parse_transaction(self, raw: dict) -> TransactionData | None:
+    def _parse_transaction(self, raw: dict[str, Any]) -> TransactionData | None:
         try:
             external_id = str(raw.get("external_id") or "")
             if not external_id:

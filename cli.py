@@ -10,7 +10,7 @@ Usage:
 import asyncio
 import uuid
 from datetime import UTC, datetime
-from typing import Annotated
+from typing import Annotated, Any
 from urllib.parse import urlparse
 
 import httpx
@@ -115,7 +115,7 @@ async def _sync(
 
     # Trigger the Restate workflow.
     # Credentials are NOT included — step_login fetches them from DB.
-    payload: dict = {
+    payload: dict[str, Any] = {
         "job_id": job_id,
         "connection_id": connection_id,
         "otp_mode": otp_mode,

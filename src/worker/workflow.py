@@ -11,6 +11,8 @@ into subsequent steps, so each step can restore the authenticated session
 without re-logging in from scratch. See steps.py for the browser lifecycle.
 """
 
+from typing import Any
+
 import restate
 from restate import WorkflowContext, WorkflowSharedContext
 
@@ -23,7 +25,7 @@ sync_workflow = restate.Workflow("SyncBankWorkflow")
 
 
 @sync_workflow.main()
-async def run(ctx: WorkflowContext, req: dict) -> dict:
+async def run(ctx: WorkflowContext, req: dict[str, Any]) -> dict[str, Any]:
     """Main workflow handler. req keys:
     - job_id: str
     - connection_id: str
@@ -49,13 +51,13 @@ async def run(ctx: WorkflowContext, req: dict) -> dict:
     # ── Step 1: Login ──────────────────────────────────────────────────────────
     # otp=None for static/totp — step_login fetches from DB.
     # otp=webhook_otp for webhook mode — arrived via promise.
-    session_state: dict = await ctx.run(
+    session_state: Any = await ctx.run(
         "login",
         lambda: steps.step_login(connection_id, job_id, webhook_otp),
     )
 
     # ── Step 2: Discover accounts ──────────────────────────────────────────────
-    account_dicts: list[dict] = await ctx.run(
+    account_dicts: list[dict[str, Any]] = await ctx.run(
         "get_accounts",
         lambda: steps.step_get_accounts(connection_id, job_id, session_state),
     )
@@ -85,5 +87,5 @@ async def provide_otp(ctx: WorkflowSharedContext, otp: str) -> None:
     """Resolve the OTP promise for a paused webhook-mode workflow.
     Called by: uv run waycore otp --job-id <id> --code <otp>
     """
-    await ctx.promise("otp").resolve(otp)
+    await ctx.promise("otp").resolve(otp)  # type: ignore[arg-type]
     log.info("workflow.otp_provided")

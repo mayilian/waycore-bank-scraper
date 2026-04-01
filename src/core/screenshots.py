@@ -10,7 +10,7 @@ save() and url() — it never knows which backend is active.
 import os
 from datetime import timedelta
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 from src.core.config import settings
 from src.core.logging import get_logger
@@ -45,7 +45,7 @@ class LocalScreenshotStore:
 class S3ScreenshotStore:
     def __init__(self) -> None:
         try:
-            import aioboto3  # type: ignore[import]
+            import aioboto3
 
             self._aioboto3 = aioboto3
         except ImportError as e:
@@ -53,7 +53,7 @@ class S3ScreenshotStore:
 
     def _client(self):  # type: ignore[no-untyped-def]
         session = self._aioboto3.Session()
-        kwargs: dict = {
+        kwargs: dict[str, Any] = {
             "aws_access_key_id": settings.s3_access_key_id,
             "aws_secret_access_key": settings.s3_secret_access_key,
         }
@@ -63,7 +63,7 @@ class S3ScreenshotStore:
 
     async def save(self, job_id: str, step: str, png: bytes) -> str:
         key = f"{job_id}/{step}.png"
-        async with self._client() as s3:
+        async with self._client() as s3:  # type: ignore[no-untyped-call]
             await s3.put_object(
                 Bucket=settings.s3_bucket,
                 Key=key,
@@ -74,8 +74,8 @@ class S3ScreenshotStore:
         return key
 
     async def url(self, path: str) -> str:
-        async with self._client() as s3:
-            return await s3.generate_presigned_url(
+        async with self._client() as s3:  # type: ignore[no-untyped-call]
+            return await s3.generate_presigned_url(  # type: ignore[no-any-return]
                 "get_object",
                 Params={"Bucket": settings.s3_bucket, "Key": path},
                 ExpiresIn=int(timedelta(hours=1).total_seconds()),

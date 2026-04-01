@@ -16,6 +16,7 @@ Designed for future horizontal scaling:
 
 import uuid
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import (
     JSON,
@@ -165,7 +166,7 @@ class Transaction(Base):
     amount: Mapped[float] = mapped_column(Numeric(20, 4), nullable=False)  # negative = debit
     currency: Mapped[str] = mapped_column(String(3), nullable=False)
     running_balance: Mapped[float | None] = mapped_column(Numeric(20, 4))
-    raw: Mapped[dict | None] = mapped_column(JSON)  # original scraped payload
+    raw: Mapped[dict[str, Any] | None] = mapped_column(JSON)  # original scraped payload
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -217,7 +218,7 @@ class SyncStep(Base):
         String(16), nullable=False
     )  # running|success|failed|skipped
     attempt: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
-    output: Mapped[dict | None] = mapped_column(JSON)  # result data or {error, traceback}
+    output: Mapped[dict[str, Any] | None] = mapped_column(JSON)  # result data or {error, traceback}
     screenshot_path: Mapped[str | None] = mapped_column(Text)  # set on failure
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

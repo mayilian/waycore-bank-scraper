@@ -14,10 +14,12 @@ They are plain async functions — Restate calls them as durable side effects.
 import traceback
 import uuid
 from datetime import UTC, datetime
+from typing import Any, cast
 
-from playwright.async_api import Page
+from playwright.async_api import Page, StorageState
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.engine import CursorResult
 
 from src.adapters import get_adapter
 from src.adapters.base import AccountData
@@ -38,7 +40,7 @@ async def _write_step(
     job_id: str,
     name: str,
     status: str,
-    output: dict | None = None,
+    output: dict[str, Any] | None = None,
     screenshot_path: str | None = None,
     started_at: datetime | None = None,
 ) -> None:
@@ -86,7 +88,7 @@ async def _capture_failure(
 # ── Step: login ────────────────────────────────────────────────────────────────
 
 
-async def step_login(connection_id: str, job_id: str, otp: str | None) -> dict:
+async def step_login(connection_id: str, job_id: str, otp: str | None) -> StorageState:
     """Navigate to the bank, log in, handle OTP if provided.
     Returns browser storage_state dict (cookies + localStorage) for subsequent steps.
     The OTP is decrypted from DB for static mode; passed directly for webhook mode.
@@ -119,7 +121,7 @@ async def step_login(connection_id: str, job_id: str, otp: str | None) -> dict:
                     raise ValueError("OTP required but not provided")
                 await adapter.submit_otp(page, otp)
 
-            state: dict = await page.context.storage_state()
+            state: StorageState = await page.context.storage_state()
         except Exception as exc:
             await _capture_failure(page, job_id, "login", exc, started_at)
             raise
@@ -138,7 +140,7 @@ async def step_login(connection_id: str, job_id: str, otp: str | None) -> dict:
 # ── Step: get_accounts ─────────────────────────────────────────────────────────
 
 
-async def step_get_accounts(connection_id: str, job_id: str, session_state: dict) -> list[dict]:
+async def step_get_accounts(connection_id: str, job_id: str, session_state: StorageState) -> list[dict[str, Any]]:
     """Navigate to the dashboard and extract all accounts.
     Returns list of AccountData dicts (serializable for Restate journal).
     Persists accounts to DB.
@@ -206,7 +208,7 @@ async def step_get_accounts(connection_id: str, job_id: str, session_state: dict
 
 
 async def step_get_transactions(
-    connection_id: str, job_id: str, session_state: dict, account_dict: dict
+    connection_id: str, job_id: str, session_state: StorageState, account_dict: dict[str, Any]
 ) -> int:
     """Extract all transactions for one account and persist to DB.
     Returns count of transactions stored.
@@ -257,7 +259,7 @@ async def step_get_transactions(
                 )
                 .on_conflict_do_nothing(index_elements=["account_id", "external_id"])
             )
-            result = await db.execute(stmt)
+            result = cast(CursorResult[Any], await db.execute(stmt))
             inserted += result.rowcount
 
         job = await db.get(SyncJob, job_id)
@@ -281,8 +283,8 @@ async def step_get_transactions(
 
 
 async def step_get_balance(
-    connection_id: str, job_id: str, session_state: dict, account_dict: dict
-) -> dict:
+    connection_id: str, job_id: str, session_state: StorageState, account_dict: dict[str, Any]
+) -> dict[str, Any]:
     """Extract and persist the current balance for one account."""
     account = AccountData(
         external_id=account_dict["external_id"],

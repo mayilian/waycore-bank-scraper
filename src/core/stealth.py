@@ -12,8 +12,9 @@ import math
 import random
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from typing import Any
 
-from playwright.async_api import Browser, BrowserContext, Page, async_playwright
+from playwright.async_api import Browser, BrowserContext, Page, StorageState, async_playwright
 from playwright_stealth import stealth_async
 
 from src.core.config import settings
@@ -21,7 +22,7 @@ from src.core.config import settings
 
 @asynccontextmanager
 async def stealth_browser(
-    storage_state: dict | None = None,
+    storage_state: StorageState | None = None,
 ) -> AsyncGenerator[tuple[Browser, Page], None]:
     """Yield a (browser, page) pair configured for stealth operation.
 
@@ -40,7 +41,7 @@ async def stealth_browser(
                 "--disable-infobars",
             ],
         )
-        ctx_kwargs: dict = {
+        ctx_kwargs: dict[str, Any] = {
             "viewport": {"width": 1366, "height": 768},
             "user_agent": (
                 "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -109,7 +110,7 @@ def _bezier_points(
     cp2_x = x0 + (x3 - x0) * random.uniform(0.6, 0.8) + random.uniform(-30, 30)
     cp2_y = y0 + (y3 - y0) * random.uniform(0.7, 0.9) + random.uniform(-30, 30)
 
-    result = []
+    result: list[tuple[float, float]] = []
     for i in range(steps + 1):
         t = i / steps
         inv = 1 - t

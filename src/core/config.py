@@ -21,4 +21,4 @@ class Settings(BaseSettings):
     s3_bucket: str = "waycore-screenshots"
 
 
-settings = Settings()  # type: ignore[call-arg]
+settings = Settings()
