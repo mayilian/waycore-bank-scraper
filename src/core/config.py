@@ -1,5 +1,6 @@
 """Application configuration via environment variables."""
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -7,6 +8,24 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     database_url: str = "postgresql+asyncpg://waycore:waycore@localhost:5432/waycore"
+
+    # Individual DB fields — used in ECS/CDK where Secrets Manager passes fields separately.
+    # When set, these override database_url.
+    db_host: str = ""
+    db_port: str = "5432"
+    db_username: str = ""
+    db_password: str = ""
+    db_name: str = "waycore"
+
+    @model_validator(mode="after")
+    def _build_database_url(self) -> "Settings":
+        if self.db_host:
+            self.database_url = (
+                f"postgresql+asyncpg://{self.db_username}:{self.db_password}"
+                f"@{self.db_host}:{self.db_port}/{self.db_name}"
+            )
+        return self
+
     db_pool_size: int = 5
     db_max_overflow: int = 10
     db_pool_recycle: int = 3600  # seconds — recycle connections after 1 hour

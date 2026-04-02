@@ -1,0 +1,16 @@
+{
+  "app": "python3 app.py",
+  "watch": {
+    "include": ["**"],
+    "exclude": [
+      "README.md",
+      "cdk.out",
+      "cdk.context.json",
+      "**/__pycache__",
+      "*.pyc"
+    ]
+  },
+  "context": {
+    "@aws-cdk/aws-ecs:enableExecuteCommand": true
+  }
+}

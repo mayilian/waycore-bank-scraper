@@ -27,6 +27,9 @@ check: lint test  ## Run lint + tests
 run-restate:  ## Start Restate server (foreground)
 	restate-server --listen-mode tcp
 
+run-api:  ## Start API server (foreground)
+	uv run uvicorn src.api.app:app --host 0.0.0.0 --port 8000 --reload
+
 run-worker:  ## Start worker (foreground)
 	uv run hypercorn "src.worker.app:app" --bind "0.0.0.0:9000"
 
@@ -50,6 +53,9 @@ transactions:  ## List recent transactions
 
 jobs:  ## List sync jobs
 	uv run waycore jobs
+
+create-api-key:  ## Create an API key for the default tenant
+	uv run waycore create-api-key
 
 help:  ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \

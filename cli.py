@@ -8,6 +8,7 @@ Usage:
 """
 
 import asyncio
+import secrets
 from typing import Annotated
 
 import typer
@@ -15,9 +16,10 @@ from rich.console import Console
 from rich.table import Table
 from sqlalchemy import select
 
+from src.api.auth import hash_key
 from src.core.logging import configure_logging
 from src.core.operations import find_or_create_connection, provide_otp, trigger_sync
-from src.db.models import Account, Organization, SyncJob, SyncStep, Transaction, User
+from src.db.models import Account, ApiKey, Organization, SyncJob, SyncStep, Transaction, User
 from src.db.session import get_session
 
 configure_logging()
@@ -222,6 +224,34 @@ async def _list_accounts() -> None:
             acc.currency,
         )
     console.print(table)
+
+
+@app.command("create-api-key")
+def create_api_key(
+    name: Annotated[str, typer.Option("--name")] = "default",
+) -> None:
+    """Create an API key for the default tenant. Prints the raw key once."""
+    asyncio.run(_create_api_key(name))
+
+
+async def _create_api_key(name: str) -> None:
+    await _ensure_default_tenant()
+    raw_key = f"wc_{secrets.token_urlsafe(32)}"
+    key_h = hash_key(raw_key)
+
+    async with get_session() as db:
+        db.add(
+            ApiKey(
+                org_id=_DEFAULT_ORG_ID,
+                user_id=_DEFAULT_USER_ID,
+                key_hash=key_h,
+                key_prefix=raw_key[:12],
+                name=name,
+            )
+        )
+
+    console.print(f"[bold green]✓[/] API key created: [cyan]{raw_key}[/]")
+    console.print("[dim]Save this — it won't be shown again.[/]")
 
 
 if __name__ == "__main__":
