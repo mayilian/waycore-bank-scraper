@@ -4,6 +4,17 @@ Durable browser automation that logs into bank portals, completes OTP challenges
 
 **Demo:** 3 accounts, 130 transactions, 3 balance snapshots from [Heritage Trust Bank](https://demo-bank-2.vercel.app) in ~60 seconds.
 
+## Table of Contents
+
+- [Architecture](#architecture)
+- [Design Decisions & Tradeoffs](#design-decisions--tradeoffs)
+- [AWS Deployment (CDK)](#aws-deployment-cdk)
+- [Local Setup](#local-setup)
+- [LLM Providers](#llm-providers)
+- [Configuration](#configuration)
+- [Adding a New Bank](#adding-a-new-bank)
+- [Project Structure](#project-structure)
+
 ---
 
 ## Architecture
@@ -338,5 +349,7 @@ src/
     concurrency.py      Per-bank semaphore
 deploy/cdk/             Two-stack CDK (Foundation + App)
 alembic/                Database migrations
-tests/                  Unit tests
+tests/
+  unit/                 Fast tests — no external dependencies
+  integration/          API + failure mode tests — requires PostgreSQL
 ```
