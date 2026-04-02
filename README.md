@@ -207,7 +207,21 @@ Restate scales orchestration horizontally, but actual throughput is limited by b
 - Balances: append-only (never UPDATE) — full balance history
 - `account_sync_results`: first-class per-account outcome tracking (partial success)
 - `sync_steps`: audit trail with screenshot paths and tracebacks on failure
+- `login_url_normalized`: stable connection identity — `normalize_url()` strips trailing slashes, `www.`, default ports, lowercases host. CLI matches on this column, preventing duplicate connections from cosmetic URL differences
+- Composite indexes on `(account_id, captured_at)`, `(connection_id, status)`, `(account_id, sync_job_id)` for cloud-scale query performance
 - Multi-tenant schema (organizations → users → bank_connections → accounts), currently single-tenant in application behavior (CLI hardcodes demo org/user)
+
+### Operational caps
+
+Hard limits prevent runaway syncs from burning resources:
+
+| Cap | Default | Controls |
+|---|---|---|
+| `MAX_SYNC_DURATION_SECS` | `600` (10 min) | `asyncio.wait_for` timeout on the entire workflow |
+| `MAX_PAGES_PER_ACCOUNT` | `50` | Pagination loop limit in both Heritage and Generic adapters |
+| `MAX_LLM_CALLS_PER_SYNC` | `100` | Per-sync LLM API call budget — raises `RuntimeError` on exceed |
+
+All three are configurable via environment variables.
 
 ---
 
@@ -241,6 +255,9 @@ All settings are environment variables (see `.env.example`):
 | `BROWSER_USER_AGENT` | Chrome 131 UA | Browser user agent string |
 | `BROWSER_LOCALE` | `en-US` | Browser locale |
 | `BROWSER_TIMEZONE` | `America/New_York` | Browser timezone |
+| `MAX_SYNC_DURATION_SECS` | `600` | Hard timeout (seconds) per sync job |
+| `MAX_PAGES_PER_ACCOUNT` | `50` | Max pagination pages per account |
+| `MAX_LLM_CALLS_PER_SYNC` | `100` | LLM API call budget per sync |
 | `SCREENSHOT_BACKEND` | `local` | `local` or `s3` (requires `uv sync --extra s3`) |
 
 Docker Compose ports are configurable via env vars: `DB_PORT`, `RESTATE_INGRESS_PORT`, `RESTATE_ADMIN_PORT`, `WORKER_PORT`.
@@ -263,14 +280,21 @@ cli.py              CLI entry point: sync, otp, jobs, transactions, accounts
 src/
   adapters/         BankAdapter ABC + per-bank implementations + parsers
   agent/            LLM client abstraction + per-goal extraction functions
-  core/             Config, Fernet crypto, structlog, Playwright stealth
+  core/             Config, Fernet crypto, structlog, Playwright stealth, URL normalization
   db/               SQLAlchemy models, async session factory
   worker/           Restate workflow, step implementations, ASGI app
-tests/              Unit tests (crypto, models, adapters, extractor)
-alembic/            Database migrations
+tests/              Unit tests (crypto, models, adapters, extractor, URL normalization)
+alembic/            Database migrations (URL normalization, indexes, data dedup)
 ```
 
 ## Roadmap
+
+### Done (recent)
+
+- [x] **URL normalization** — Stable connection identity via `normalize_url()`. Prevents duplicate connections from trailing slashes, `www.`, default ports.
+- [x] **Cloud-ready indexes** — Composite indexes on high-query-volume columns (balances, sync_jobs, account_sync_results).
+- [x] **Operational caps** — Hard limits on sync duration, pagination depth, and LLM call budget.
+- [x] **Data deduplication** — Migration merges duplicate connections created by URL variants, re-parents accounts/transactions/balances.
 
 ### Must do
 
