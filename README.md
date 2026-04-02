@@ -14,6 +14,7 @@ Durable browser automation that logs into bank portals, completes OTP challenges
 - [Current Limits & Scaling](#current-limits--scaling)
 - [LLM Providers](#llm-providers)
 - [Key Environment Variables](#key-environment-variables)
+- [API Reference](#api-reference)
 - [Adding a New Bank](#adding-a-new-bank)
 - [Project Structure](#project-structure)
 
@@ -149,12 +150,14 @@ uv run waycore create-api-key --name test
 
 export KEY=wc_DP3o_...  # your key from above
 
-curl http://localhost:8000/v1/accounts      -H "Authorization: Bearer $KEY"
-curl http://localhost:8000/v1/transactions   -H "Authorization: Bearer $KEY"
-curl http://localhost:8000/v1/jobs           -H "Authorization: Bearer $KEY"
+curl http://localhost:8000/v1/accounts                          -H "Authorization: Bearer $KEY"
+curl http://localhost:8000/v1/accounts/ACCOUNT_ID                -H "Authorization: Bearer $KEY"
+curl http://localhost:8000/v1/accounts/ACCOUNT_ID/balances       -H "Authorization: Bearer $KEY"
+curl http://localhost:8000/v1/transactions?account_id=ACCOUNT_ID -H "Authorization: Bearer $KEY"
+curl http://localhost:8000/v1/jobs                               -H "Authorization: Bearer $KEY"
 ```
 
-API docs at `http://localhost:8000/docs` (Swagger UI).
+Full API reference below — see [API Reference](#api-reference). Interactive docs at `http://localhost:8000/docs` (Swagger UI).
 
 **Dev CLI** (talks directly to Postgres — no auth, no API server needed):
 
@@ -278,6 +281,45 @@ Fargate Spot (80% of capacity) saves 60-70% vs on-demand. Spot interruptions are
 | `SCREENSHOT_BACKEND` | `local` | `local` or `s3` |
 
 Full list in `src/core/config.py`.
+
+---
+
+## API Reference
+
+All endpoints require `Authorization: Bearer <api_key>` header. All data is tenant-scoped — each API key only sees its own data.
+
+### Connections
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `POST` | `/v1/connections` | Register bank credentials (encrypted at rest) |
+| `GET` | `/v1/connections` | List all bank connections |
+| `GET` | `/v1/connections/{id}` | Get a single connection |
+| `DELETE` | `/v1/connections/{id}` | Remove connection and all its data (cascades) |
+
+### Syncs
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `POST` | `/v1/connections/{id}/sync` | Trigger a sync (returns `job_id`, 202 Accepted) |
+| `GET` | `/v1/jobs` | List sync jobs (`?limit=20&offset=0`) |
+| `GET` | `/v1/jobs/{id}` | Job detail with step-by-step breakdown |
+| `POST` | `/v1/jobs/{id}/otp` | Send OTP code to a paused webhook-mode sync |
+
+### Accounts & Data
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/v1/accounts` | List all discovered accounts |
+| `GET` | `/v1/accounts/{id}` | Get a single account |
+| `GET` | `/v1/accounts/{id}/balances` | Balance history (append-only snapshots, `?limit=50&offset=0`) |
+| `GET` | `/v1/transactions` | List transactions (`?account_id=X&limit=50&offset=0`) |
+
+### Health
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/healthz` | Health check (no auth required) |
 
 ---
 

@@ -72,6 +72,14 @@ class AccountResponse(BaseModel):
     currency: str
 
 
+class BalanceResponse(BaseModel):
+    id: str
+    available: Decimal | None
+    current: Decimal
+    currency: str
+    captured_at: datetime
+
+
 class TransactionResponse(BaseModel):
     id: str
     external_id: str

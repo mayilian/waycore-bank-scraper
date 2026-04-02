@@ -126,8 +126,12 @@ class BankConnection(Base):
     )
 
     user: Mapped[User] = relationship("User", back_populates="bank_connections")
-    accounts: Mapped[list["Account"]] = relationship("Account", back_populates="connection")
-    sync_jobs: Mapped[list["SyncJob"]] = relationship("SyncJob", back_populates="connection")
+    accounts: Mapped[list["Account"]] = relationship(
+        "Account", back_populates="connection", cascade="all, delete-orphan", passive_deletes=True
+    )
+    sync_jobs: Mapped[list["SyncJob"]] = relationship(
+        "SyncJob", back_populates="connection", cascade="all, delete-orphan", passive_deletes=True
+    )
 
 
 class Account(Base):
@@ -149,9 +153,11 @@ class Account(Base):
     )
 
     connection: Mapped[BankConnection] = relationship("BankConnection", back_populates="accounts")
-    balances: Mapped[list["Balance"]] = relationship("Balance", back_populates="account")
+    balances: Mapped[list["Balance"]] = relationship(
+        "Balance", back_populates="account", cascade="all, delete-orphan", passive_deletes=True
+    )
     transactions: Mapped[list["Transaction"]] = relationship(
-        "Transaction", back_populates="account"
+        "Transaction", back_populates="account", cascade="all, delete-orphan", passive_deletes=True
     )
 
 
@@ -224,10 +230,12 @@ class SyncJob(Base):
 
     connection: Mapped[BankConnection] = relationship("BankConnection", back_populates="sync_jobs")
     steps: Mapped[list["SyncStep"]] = relationship(
-        "SyncStep", back_populates="job", order_by="SyncStep.created_at"
+        "SyncStep", back_populates="job", order_by="SyncStep.created_at",
+        cascade="all, delete-orphan", passive_deletes=True,
     )
     account_results: Mapped[list["AccountSyncResult"]] = relationship(
-        "AccountSyncResult", back_populates="job", order_by="AccountSyncResult.created_at"
+        "AccountSyncResult", back_populates="job", order_by="AccountSyncResult.created_at",
+        cascade="all, delete-orphan", passive_deletes=True,
     )
 
 

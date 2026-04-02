@@ -47,3 +47,32 @@ async def list_connections(tenant: TenantContext = Depends(get_tenant)) -> list[
         )
         for c in conns
     ]
+
+
+@router.get("/connections/{connection_id}", response_model=ConnectionResponse)
+async def get_connection(
+    connection_id: str, tenant: TenantContext = Depends(get_tenant)
+) -> ConnectionResponse:
+    async with get_session() as db:
+        conn = await queries.get_connection(db, connection_id, tenant.user_id)
+    if not conn:
+        raise HTTPException(404, "Connection not found")
+    return ConnectionResponse(
+        id=conn.id,
+        bank_slug=conn.bank_slug,
+        bank_name=conn.bank_name,
+        login_url=conn.login_url,
+        otp_mode=conn.otp_mode,
+        last_synced_at=conn.last_synced_at,
+        created_at=conn.created_at,
+    )
+
+
+@router.delete("/connections/{connection_id}", status_code=204)
+async def delete_connection(
+    connection_id: str, tenant: TenantContext = Depends(get_tenant)
+) -> None:
+    async with get_session() as db:
+        deleted = await queries.delete_connection(db, connection_id, tenant.user_id)
+    if not deleted:
+        raise HTTPException(404, "Connection not found")

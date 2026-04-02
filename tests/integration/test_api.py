@@ -8,6 +8,8 @@ Run: uv run pytest tests/integration/ -v
 
 import hashlib
 import uuid
+from datetime import UTC, datetime
+from decimal import Decimal
 
 import httpx
 import pytest
@@ -16,8 +18,19 @@ from sqlalchemy.orm import sessionmaker
 
 from src.api.app import app
 from src.core.config import settings
+from src.core.crypto import encrypt
 from src.db import session as session_mod
-from src.db.models import ApiKey, Organization, User
+from src.db.models import (
+    Account,
+    ApiKey,
+    Balance,
+    BankConnection,
+    Organization,
+    SyncJob,
+    SyncStep,
+    Transaction,
+    User,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -162,3 +175,203 @@ class TestHealthEndpoint:
             resp = await client.get("/healthz")
             assert resp.status_code == 200
             assert resp.json() == {"status": "ok"}
+
+
+@pytest.fixture()
+async def tenant_with_data(tenant: dict[str, str]) -> dict[str, str]:
+    """Extend tenant fixture with a connection, account, balance, transaction, and job."""
+    user_id = tenant["user_id"]
+    conn_id = str(uuid.uuid4())
+    acct_id = str(uuid.uuid4())
+    job_id = str(uuid.uuid4())
+
+    engine = create_async_engine(settings.database_url)
+    factory = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)  # type: ignore[call-overload]
+    async with factory() as db:
+        db.add(
+            BankConnection(
+                id=conn_id,
+                user_id=user_id,
+                bank_slug="heritage_bank",
+                bank_name="Heritage Bank",
+                login_url="https://demo-bank-2.vercel.app",
+                login_url_normalized="https://demo-bank-2.vercel.app",
+                username_enc=encrypt("testuser"),
+                password_enc=encrypt("testpass"),
+                otp_mode="static",
+            )
+        )
+        db.add(
+            Account(
+                id=acct_id,
+                connection_id=conn_id,
+                external_id="123456789",
+                name="Test Checking",
+                account_type="checking",
+                currency="USD",
+            )
+        )
+        db.add(
+            Balance(
+                id=str(uuid.uuid4()),
+                account_id=acct_id,
+                current=Decimal("1000.00"),
+                available=Decimal("950.00"),
+                currency="USD",
+                captured_at=datetime.now(UTC),
+            )
+        )
+        db.add(
+            Transaction(
+                id=str(uuid.uuid4()),
+                account_id=acct_id,
+                external_id="txn_001",
+                posted_at=datetime.now(UTC),
+                description="Test transaction",
+                amount=Decimal("-50.00"),
+                currency="USD",
+            )
+        )
+        db.add(
+            SyncJob(
+                id=job_id,
+                connection_id=conn_id,
+                status="success",
+                accounts_synced=1,
+                transactions_synced=1,
+            )
+        )
+        db.add(
+            SyncStep(
+                id=str(uuid.uuid4()),
+                job_id=job_id,
+                name="login",
+                status="success",
+                started_at=datetime.now(UTC),
+                completed_at=datetime.now(UTC),
+            )
+        )
+        await db.commit()
+    await engine.dispose()
+
+    return {
+        **tenant,
+        "connection_id": conn_id,
+        "account_id": acct_id,
+        "job_id": job_id,
+    }
+
+
+class TestAccountEndpoints:
+    """Test account detail and balance history endpoints."""
+
+    async def test_get_account(self, tenant_with_data: dict[str, str]) -> None:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            headers = {"Authorization": f"Bearer {tenant_with_data['api_key']}"}
+            resp = await client.get(
+                f"/v1/accounts/{tenant_with_data['account_id']}", headers=headers
+            )
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["external_id"] == "123456789"
+            assert data["name"] == "Test Checking"
+            assert data["account_type"] == "checking"
+
+    async def test_get_account_not_found(self, tenant: dict[str, str]) -> None:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            headers = {"Authorization": f"Bearer {tenant['api_key']}"}
+            resp = await client.get(f"/v1/accounts/{uuid.uuid4()}", headers=headers)
+            assert resp.status_code == 404
+
+    async def test_list_balances(self, tenant_with_data: dict[str, str]) -> None:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            headers = {"Authorization": f"Bearer {tenant_with_data['api_key']}"}
+            resp = await client.get(
+                f"/v1/accounts/{tenant_with_data['account_id']}/balances", headers=headers
+            )
+            assert resp.status_code == 200
+            data = resp.json()
+            assert len(data) == 1
+            assert data[0]["current"] == "1000.0000"
+            assert data[0]["available"] == "950.0000"
+            assert data[0]["currency"] == "USD"
+
+    async def test_list_balances_not_found(self, tenant: dict[str, str]) -> None:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            headers = {"Authorization": f"Bearer {tenant['api_key']}"}
+            resp = await client.get(f"/v1/accounts/{uuid.uuid4()}/balances", headers=headers)
+            assert resp.status_code == 404
+
+    async def test_transactions_filtered_by_account(
+        self, tenant_with_data: dict[str, str]
+    ) -> None:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            headers = {"Authorization": f"Bearer {tenant_with_data['api_key']}"}
+            resp = await client.get(
+                f"/v1/transactions?account_id={tenant_with_data['account_id']}",
+                headers=headers,
+            )
+            assert resp.status_code == 200
+            data = resp.json()
+            assert len(data) == 1
+            assert data[0]["description"] == "Test transaction"
+
+
+class TestConnectionDetailEndpoints:
+    """Test connection detail, delete, and cascade behavior."""
+
+    async def test_get_connection(self, tenant_with_data: dict[str, str]) -> None:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            headers = {"Authorization": f"Bearer {tenant_with_data['api_key']}"}
+            resp = await client.get(
+                f"/v1/connections/{tenant_with_data['connection_id']}", headers=headers
+            )
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["bank_slug"] == "heritage_bank"
+            assert "username" not in data
+            assert "password" not in data
+
+    async def test_get_connection_not_found(self, tenant: dict[str, str]) -> None:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            headers = {"Authorization": f"Bearer {tenant['api_key']}"}
+            resp = await client.get(f"/v1/connections/{uuid.uuid4()}", headers=headers)
+            assert resp.status_code == 404
+
+    async def test_delete_connection_cascades(self, tenant_with_data: dict[str, str]) -> None:
+        """Deleting a connection removes accounts, transactions, balances, and jobs."""
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            headers = {"Authorization": f"Bearer {tenant_with_data['api_key']}"}
+
+            # Verify data exists before delete
+            resp = await client.get("/v1/accounts", headers=headers)
+            assert len(resp.json()) == 1
+
+            # Delete
+            resp = await client.delete(
+                f"/v1/connections/{tenant_with_data['connection_id']}", headers=headers
+            )
+            assert resp.status_code == 204
+
+            # Verify cascade — all data gone
+            resp = await client.get("/v1/accounts", headers=headers)
+            assert resp.json() == []
+            resp = await client.get("/v1/transactions", headers=headers)
+            assert resp.json() == []
+            resp = await client.get("/v1/jobs", headers=headers)
+            assert resp.json() == []
+
+    async def test_delete_connection_not_found(self, tenant: dict[str, str]) -> None:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            headers = {"Authorization": f"Bearer {tenant['api_key']}"}
+            resp = await client.delete(f"/v1/connections/{uuid.uuid4()}", headers=headers)
+            assert resp.status_code == 404
