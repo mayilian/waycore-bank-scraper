@@ -286,14 +286,17 @@ src/
   agent/
     llm.py              LLMClient protocol + providers (Anthropic, Bedrock, OpenAI)
     extractor.py        Per-goal LLM extraction with task-specific DOM observers
+  browser/
+    stealth.py          Playwright launch + stealth + bezier mouse
+    screenshots.py      Screenshot capture (local or S3)
   core/
     config.py           pydantic-settings (all env vars)
     crypto.py           MultiFernet encrypt/decrypt with key rotation
     logging.py          structlog JSON + context binding
     metrics.py          CloudWatch EMF metric emitter
-    operations.py       Shared business logic (CLI + API both call this)
-    stealth.py          Playwright launch + stealth + bezier mouse
     urls.py             URL normalization
+  services/
+    operations.py       Shared business logic (CLI + API both call this)
   db/
     models.py           SQLAlchemy models (Organization → User → ApiKey → BankConnection → ...)
     queries.py          Tenant-scoped query helpers
@@ -308,11 +311,12 @@ deploy/cdk/
     foundation_stack.py VPC, RDS, ECR, S3, Secrets, Restate
     app_stack.py        API + Worker Fargate services
 alembic/                Database migrations
-tests/unit_tests/       Mirrors src/ layout
-  adapters/             Adapter + parser tests
-  agent/                Extractor tests
-  api/                  API integration tests (requires PostgreSQL)
-  core/                 Crypto, URL, config tests
-  db/                   Model tests
-  worker/               Failure mode, concurrency, trigger tests
+tests/
+  unit_tests/           Mirrors src/ layout — no external dependencies
+    adapters/           Adapter + parser tests
+    agent/              Extractor tests
+    core/               Crypto, URL, config tests
+    db/                 Model tests
+    worker/             Failure mode, concurrency, trigger tests
+  integration/          API tests — requires running PostgreSQL
 ```

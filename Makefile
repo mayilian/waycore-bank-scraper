@@ -12,7 +12,7 @@ migrate:  ## Run database migrations
 # ── Quality ──────────────────────────────────────────────────────────────────
 
 test:  ## Run tests
-	uv run pytest tests/unit_tests/ -v
+	uv run pytest tests/ -v
 
 lint:  ## Run linter
 	uv run ruff check src/ cli.py tests/ scripts/

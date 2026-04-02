@@ -17,8 +17,8 @@ from playwright.async_api import Page
 
 from src.adapters.base import AccountData, BalanceData, BankAdapter, TransactionData
 from src.agent import extractor
+from src.browser.stealth import human_fill, human_move_and_click
 from src.core.logging import get_logger
-from src.core.stealth import human_fill, human_move_and_click
 
 log = get_logger(__name__)
 

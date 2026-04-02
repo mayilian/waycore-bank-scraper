@@ -11,7 +11,7 @@ OTP pause/resume. Tiered extraction: deterministic DOM selectors first, LLM fall
 when selectors miss.
 
 Two services (one codebase): API (FastAPI, port 8000) and Worker (Restate + Playwright, port 9000).
-CLI (`cli.py`) for local dev. Both API and CLI call `src/core/operations.py`.
+CLI (`cli.py`) for local dev. Both API and CLI call `src/services/operations.py`.
 
 ## Coding Conventions
 
@@ -47,7 +47,7 @@ After every meaningful chunk of code:
 ## Key Files
 
 ```
-src/core/operations.py     Shared business logic (CLI + API both call this)
+src/services/operations.py Shared business logic (CLI + API both call this)
 src/worker/workflow.py     Durable workflow: login → extract_all → finalise
 src/worker/steps.py        Step functions with batched DB writes
 src/worker/concurrency.py  Global + per-bank concurrency limiter

@@ -9,9 +9,9 @@ from src.api.schemas import (
     TriggerSyncRequest,
     TriggerSyncResponse,
 )
-from src.core.operations import provide_otp, trigger_sync
 from src.db import queries
 from src.db.session import get_session
+from src.services.operations import provide_otp, trigger_sync
 
 router = APIRouter(tags=["syncs"])
 

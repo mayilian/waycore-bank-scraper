@@ -196,7 +196,7 @@ class TestTriggerSyncFailure:
 
     async def test_trigger_failure_marks_job_failed(self) -> None:
         """Mock the Restate HTTP call to fail, verify job gets marked failed."""
-        from src.core.operations import trigger_sync
+        from src.services.operations import trigger_sync
 
         mock_response = AsyncMock()
         mock_response.status_code = 500
@@ -207,8 +207,8 @@ class TestTriggerSyncFailure:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("src.core.operations.httpx.AsyncClient", return_value=mock_client):
-            with patch("src.core.operations.get_session") as mock_session:
+        with patch("src.services.operations.httpx.AsyncClient", return_value=mock_client):
+            with patch("src.services.operations.get_session") as mock_session:
                 # First call: create job. Second call: mark failed.
                 mock_db = AsyncMock()
                 mock_job = AsyncMock()

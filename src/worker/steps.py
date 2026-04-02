@@ -31,10 +31,10 @@ from sqlalchemy.engine import CursorResult
 
 from src.adapters import get_adapter
 from src.adapters.base import AccountData
+from src.browser.screenshots import get_screenshot_store
+from src.browser.stealth import stealth_browser
 from src.core.crypto import decrypt
 from src.core.logging import get_logger
-from src.core.screenshots import get_screenshot_store
-from src.core.stealth import stealth_browser
 from src.db.models import (
     Account,
     AccountSyncResult,

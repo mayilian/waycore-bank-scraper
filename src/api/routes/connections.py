@@ -2,9 +2,9 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from src.api.auth import TenantContext, get_tenant
 from src.api.schemas import ConnectionResponse, CreateConnectionRequest
-from src.core.operations import find_or_create_connection
 from src.db import queries
 from src.db.session import get_session
+from src.services.operations import find_or_create_connection
 
 router = APIRouter(tags=["connections"])
 

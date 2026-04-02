@@ -25,8 +25,8 @@ from src.adapters.heritage_parsers import (
     parse_transaction_row,
 )
 from src.agent import extractor
+from src.browser.screenshots import get_screenshot_store
 from src.core.logging import get_logger
-from src.core.screenshots import get_screenshot_store
 
 log = get_logger(__name__)
 

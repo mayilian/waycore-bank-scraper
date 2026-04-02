@@ -18,9 +18,9 @@ from sqlalchemy import select
 
 from src.api.auth import hash_key
 from src.core.logging import configure_logging
-from src.core.operations import find_or_create_connection, provide_otp, trigger_sync
 from src.db.models import Account, ApiKey, Organization, SyncJob, SyncStep, Transaction, User
 from src.db.session import get_session
+from src.services.operations import find_or_create_connection, provide_otp, trigger_sync
 
 configure_logging()
 app = typer.Typer(help="WayCore bank scraper CLI", add_completion=False)
