@@ -4,6 +4,19 @@ Durable browser automation that logs into bank portals, completes OTP challenges
 
 **Demo:** 3 accounts, 130 transactions, 3 balance snapshots from [Heritage Trust Bank](https://demo-bank-2.vercel.app) in ~60 seconds.
 
+## Table of Contents
+
+- [Quick Start](#quick-start)
+- [Architecture](#architecture)
+- [Design Decisions & Tradeoffs](#design-decisions--tradeoffs)
+- [Local Setup](#local-setup)
+- [AWS Deployment (CDK)](#aws-deployment-cdk)
+- [Current Limits & Scaling](#current-limits--scaling)
+- [LLM Providers](#llm-providers)
+- [Key Environment Variables](#key-environment-variables)
+- [Adding a New Bank](#adding-a-new-bank)
+- [Project Structure](#project-structure)
+
 ## Quick Start
 
 ```bash
@@ -143,7 +156,13 @@ curl http://localhost:8000/v1/jobs           -H "Authorization: Bearer $KEY"
 
 API docs at `http://localhost:8000/docs` (Swagger UI).
 
-> **Dev CLI:** `uv run waycore accounts|transactions|jobs` talks directly to Postgres (no auth, dev-only). Useful for debugging but not a product interface.
+**Dev CLI** (talks directly to Postgres — no auth, no API server needed):
+
+```bash
+uv run waycore accounts       # list synced accounts
+uv run waycore transactions   # list recent transactions
+uv run waycore jobs           # list sync jobs
+```
 
 ### Stop
 
