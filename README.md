@@ -6,89 +6,75 @@ Durable browser automation that logs into bank portals, completes OTP challenges
 
 ---
 
-## Local Setup
+## Architecture
 
-**Prerequisites:** Docker, Python 3.12+, [uv](https://docs.astral.sh/uv/getting-started/installation/)
-
-```bash
-git clone https://github.com/mayilian/waycore-bank-scraper.git
-cd waycore-bank-scraper
-uv sync --extra anthropic
-uv run playwright install chromium
+```
+API (FastAPI) ──→ Restate (durable workflow) ──→ Worker (Playwright + LLM) ──→ PostgreSQL
+     ↑                                                                              ↑
+  Tenant auth                                                              Idempotent writes
+  (API key)                                                               (ON CONFLICT DO NOTHING)
 ```
 
-Create `.env`:
-```bash
-ENCRYPTION_KEY=$(python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
+**Two services, one image:**
+- **API** (port 8000): Creates connections, triggers syncs, returns data. No browser. 256MB RAM.
+- **Worker** (port 9000): Runs Playwright, drives browsers, extracts data. 2GB RAM.
 
-cat > .env << EOF
-ANTHROPIC_API_KEY=sk-ant-...your-key...
-ENCRYPTION_KEY=$ENCRYPTION_KEY
-EOF
+### Workflow
+
+```
+Browser #1 (login)       → login, OTP, capture session cookies
+Browser #2 (extract_all) → restore session, discover accounts,
+                           extract txns + balance for ALL accounts
+(no browser) finalise    → mark job complete
 ```
 
-Start services and run a sync:
-```bash
-docker compose up -d                # postgres + restate + worker + api
-uv run alembic upgrade head         # run migrations
-uv run waycore sync \
-  --bank-url https://demo-bank-2.vercel.app \
-  --username user --password pass --otp 123456
+**2 browser launches per sync** regardless of account count. Restate journals each step — if the worker crashes, replay resumes from the last checkpoint.
+
+### Tiered Extraction
+
+```
+Tier 1 — Deterministic DOM    Known selectors. Zero LLM cost. Sub-second.
+         ↓ (selector miss)
+Tier 2 — LLM text fallback    DOM summary → LLM → JSON. ~2K tokens.
+         ↓ (ambiguous DOM)
+Tier 3 — LLM vision           DOM + screenshot → LLM. Handles anything.
 ```
 
-Expected output:
-```
-✓ Job created: 507abaf8-...
-  Bank: heritage_bank  URL: https://demo-bank-2.vercel.app
-
-Live step trace (polling every 2s):
-
-  ✓ login                                     19.5s
-  ✓ extract_583761204                         39.7s
-  ✓ extract_583769842                         39.7s
-  ✓ extract_739220031                         39.7s
-  ✓ extract_all                               39.7s
-  ✓ finalise                                  0.0s
-
-✓ Sync complete. Accounts: 3  Transactions: 130
-```
-
-### Inspect results (CLI)
-
-```bash
-uv run waycore accounts       # list synced accounts
-uv run waycore transactions   # list transactions
-uv run waycore jobs           # list sync jobs
-```
-
-### Inspect results (API)
-
-The API runs at `http://localhost:8000`. Generate a key, then query:
-
-```bash
-uv run waycore create-api-key --name test
-# ✓ API key created: wc_DP3o_twmKxjj5MD9i4tUaakJEEhbbhOVDCfVnAK5ZbQ
-
-export KEY=wc_DP3o_...  # your key from above
-
-curl http://localhost:8000/v1/accounts      -H "Authorization: Bearer $KEY"
-curl http://localhost:8000/v1/transactions   -H "Authorization: Bearer $KEY"
-curl http://localhost:8000/v1/jobs           -H "Authorization: Bearer $KEY"
-```
-
-The CLI talks directly to Postgres (no auth, hardcoded dev user). The API is what real clients call — it requires a Bearer API key and scopes all data by tenant. Both read/write the same database.
-
-API docs at `http://localhost:8000/docs` (Swagger UI).
-
-### Stop
-
-```bash
-docker compose down
-```
+Heritage adapter runs Tier 1 in the happy path. LLM is never instantiated unless a fallback triggers.
 
 ---
 
-## AWS Setup (CDK)
+## Design Decisions & Tradeoffs
+
+### Problems solved
+
+| Problem | Solution | Why it matters |
+|---|---|---|
+| **Browser launches are expensive** (2-4s cold start, 200MB+ each) | 2 browsers per sync regardless of account count. Login gets its own browser (OTP pause/resume requires it). All account extraction shares one browser session. | A naive "1 browser per account" design would cost 10s+ and 2GB+ for a 10-account bank. This keeps it flat at ~400MB and ~20s for the browser phase. |
+| **LLM calls are slow and expensive** | Tiered extraction: deterministic DOM selectors first, LLM only as fallback. Per-goal focused prompts (not one mega-prompt). Task-specific DOM observers strip irrelevant HTML before sending to LLM. | Heritage Bank demo runs at zero LLM cost. When LLM does trigger, each call sees only the relevant DOM slice (~2K tokens vs ~50K for full page). |
+| **Bank scraping is inherently flaky** | Restate durable workflows journal every step. Crash mid-extraction → restart from last checkpoint, not from login. Per-account `AccountSyncResult` tracking enables partial success. | A 30-minute sync that crashes at account #9 of 10 doesn't lose the first 8. Failed accounts are retried independently. |
+| **OTP requires human-in-the-loop** | Restate `ctx.promise()` suspends the workflow with zero resources held. No browser open, no memory consumed while waiting. CLI or API sends the OTP code, workflow resumes. | Webhook OTP can wait minutes/hours. Holding a browser open during that time is wasteful and fragile. |
+| **Money precision** | `NUMERIC(20,4)` + Python `Decimal` everywhere. No floats. | IEEE 754 floating point loses precision on currency. $0.10 + $0.20 ≠ $0.30 in float math. |
+| **Credential security** | MultiFernet encryption at rest. Decrypt only in worker memory. Key rotation via `ENCRYPTION_KEY_PREVIOUS` — no downtime, no re-encryption migration needed. Never logged, never in API responses. | Credentials in plaintext in a database is a compliance and security failure. MultiFernet makes rotation zero-downtime. |
+| **Duplicate data on re-sync** | `ON CONFLICT (account_id, external_id) DO NOTHING` on all transaction inserts. Balances are append-only (never UPDATE). | Re-running a sync is safe. No duplicate transactions, no overwritten balance history. |
+| **Multi-tenant data isolation** | All queries scoped by `user_id` via `src/db/queries.py`. No raw `select(Model)` in API routes. API keys SHA-256 hashed + `hmac.compare_digest` for timing safety. | App-level tenant isolation prevents data leakage. Timing-safe comparison prevents key enumeration. |
+| **Per-bank rate limiting** | `asyncio.Semaphore` per bank slug (`MAX_CONCURRENT_PER_BANK=3`). | Banks rate-limit or block IPs on parallel logins. Without this, 10 concurrent syncs to the same bank would get IP-banned. |
+
+### Tradeoffs accepted
+
+| Tradeoff | Chose | Over | Rationale |
+|---|---|---|---|
+| **Extraction strategy** | Deterministic selectors with LLM fallback | Pure LLM for everything | 10x faster, zero cost for known banks. LLM still handles unknown banks via `GenericBankAdapter`. |
+| **Browser sessions** | 2 browsers per sync (login + extract_all) | 1 browser for everything | Login needs its own session for OTP pause/resume. Could be 1 if OTP weren't a requirement, but it is. |
+| **Restate deployment** | Single self-hosted instance | Restate Cloud or distributed | Simpler, cheaper, sufficient for current scale. Restate single-node handles thousands of concurrent workflows. |
+| **Worker scaling** | Fargate Spot (80%) + on-demand base (20%) | All on-demand | 60-70% cost savings. Spot interruptions are fine — Restate replays from the last checkpoint. |
+| **CDK split** | Two stacks (Foundation + App) | Single stack | Solves ECR chicken-and-egg: Foundation creates repos, images get pushed, then App creates services that pull them. |
+| **DB connection pooling** | SQLAlchemy async pool (configurable) + RDS Proxy support | PgBouncer sidecar | Fewer moving parts. RDS Proxy handles connection multiplexing in production. Toggle with `USE_RDS_PROXY=true`. |
+| **Screenshot storage** | Local filesystem (dev) / S3 (prod) | Always S3 | Local is simpler for dev. S3 with 30-day lifecycle for prod — failure screenshots auto-expire. |
+
+---
+
+## AWS Deployment (CDK)
 
 Two CDK stacks: **Foundation** (VPC, RDS, ECR, S3, Secrets, Restate) and **App** (API + Worker services). Deploy Foundation first, push Docker images to ECR, then deploy App.
 
@@ -99,9 +85,9 @@ Two CDK stacks: **Foundation** (VPC, RDS, ECR, S3, Secrets, Restate) and **App**
 | **API** | ECS Fargate, ARM64, 0.25 vCPU / 512 MB, behind ALB |
 | **Worker** | ECS Fargate Spot + on-demand base, ARM64, 1 vCPU / 2 GB |
 | **Restate** | ECS Fargate, ARM64, 0.5 vCPU / 1 GB |
-| **Database** | RDS PostgreSQL 16, db.t4g.micro, encrypted |
-| **Screenshots** | S3, 30-day lifecycle |
-| **Service discovery** | Cloud Map (`*.waycore.local`) |
+| **Database** | RDS PostgreSQL 16, db.t4g.micro, encrypted, 7-day backups |
+| **Screenshots** | S3, 30-day lifecycle, encryption at rest |
+| **Service discovery** | Cloud Map (`*.waycore.local`) — private DNS for inter-service communication |
 
 ### Step-by-step deployment
 
@@ -197,62 +183,95 @@ Destroy App first (depends on Foundation). All resources have `DESTROY` removal 
 
 ---
 
-## Architecture
+## Local Setup
 
-```
-API (FastAPI) ──→ Restate (durable workflow) ──→ Worker (Playwright + LLM) ──→ PostgreSQL
-     ↑                                                                              ↑
-  Tenant auth                                                              Idempotent writes
-  (API key)                                                               (ON CONFLICT DO NOTHING)
-```
+**Prerequisites:** Docker, Python 3.12+, [uv](https://docs.astral.sh/uv/getting-started/installation/)
 
-**Two services, one image:**
-- **API** (port 8000): Creates connections, triggers syncs, returns data. No browser. 256MB RAM.
-- **Worker** (port 9000): Runs Playwright, drives browsers, extracts data. 2GB RAM.
-
-### Workflow
-
-```
-Browser #1 (login)       → login, OTP, capture session cookies
-Browser #2 (extract_all) → restore session, discover accounts,
-                           extract txns + balance for ALL accounts
-(no browser) finalise    → mark job complete
+```bash
+git clone https://github.com/mayilian/waycore-bank-scraper.git
+cd waycore-bank-scraper
+uv sync --extra anthropic
+uv run playwright install chromium
 ```
 
-**2 browser launches per sync** regardless of account count. Restate journals each step — if the worker crashes, replay resumes from the last checkpoint.
+Create `.env`:
+```bash
+ENCRYPTION_KEY=$(python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
 
-### Tiered Extraction
-
-```
-Tier 1 — Deterministic DOM    Known selectors. Zero LLM cost. Sub-second.
-         ↓ (selector miss)
-Tier 2 — LLM text fallback    DOM summary → LLM → JSON. ~2K tokens.
-         ↓ (ambiguous DOM)
-Tier 3 — LLM vision           DOM + screenshot → LLM. Handles anything.
+cat > .env << EOF
+ANTHROPIC_API_KEY=sk-ant-...your-key...
+ENCRYPTION_KEY=$ENCRYPTION_KEY
+EOF
 ```
 
-Heritage adapter runs Tier 1 in the happy path. LLM is never instantiated unless a fallback triggers.
+Start services and run a sync:
+```bash
+docker compose up -d                # postgres + restate + worker + api
+uv run alembic upgrade head         # run migrations
+uv run waycore sync \
+  --bank-url https://demo-bank-2.vercel.app \
+  --username user --password pass --otp 123456
+```
 
-### LLM Providers
+Expected output:
+```
+✓ Job created: 507abaf8-...
+  Bank: heritage_bank  URL: https://demo-bank-2.vercel.app
+
+Live step trace (polling every 2s):
+
+  ✓ login                                     19.5s
+  ✓ extract_583761204                         39.7s
+  ✓ extract_583769842                         39.7s
+  ✓ extract_739220031                         39.7s
+  ✓ extract_all                               39.7s
+  ✓ finalise                                  0.0s
+
+✓ Sync complete. Accounts: 3  Transactions: 130
+```
+
+### Inspect results (CLI)
+
+```bash
+uv run waycore accounts       # list synced accounts
+uv run waycore transactions   # list transactions
+uv run waycore jobs           # list sync jobs
+```
+
+### Inspect results (API)
+
+The API runs at `http://localhost:8000`. Generate a key, then query:
+
+```bash
+uv run waycore create-api-key --name test
+# ✓ API key created: wc_DP3o_twmKxjj5MD9i4tUaakJEEhbbhOVDCfVnAK5ZbQ
+
+export KEY=wc_DP3o_...  # your key from above
+
+curl http://localhost:8000/v1/accounts      -H "Authorization: Bearer $KEY"
+curl http://localhost:8000/v1/transactions   -H "Authorization: Bearer $KEY"
+curl http://localhost:8000/v1/jobs           -H "Authorization: Bearer $KEY"
+```
+
+The CLI talks directly to Postgres (no auth, hardcoded dev user). The API is what real clients call — it requires a Bearer API key and scopes all data by tenant. Both read/write the same database.
+
+API docs at `http://localhost:8000/docs` (Swagger UI).
+
+### Stop
+
+```bash
+docker compose down
+```
+
+---
+
+## LLM Providers
 
 | Provider | Config | Notes |
 |---|---|---|
 | Anthropic (default) | `LLM_PROVIDER=anthropic` + `ANTHROPIC_API_KEY` | Direct API |
 | Amazon Bedrock | `LLM_PROVIDER=bedrock` + `AWS_REGION` | Uses IAM credentials, no API key |
 | OpenAI | `LLM_PROVIDER=openai` + `OPENAI_API_KEY` | GPT-4o |
-
-### Data Model
-
-- `NUMERIC(20,4)` + `Decimal` for all money
-- Transactions: `UNIQUE(account_id, external_id)` + `ON CONFLICT DO NOTHING`
-- Balances: append-only (never UPDATE)
-- `account_sync_results`: per-account outcome tracking (partial success)
-- `sync_steps`: audit trail with screenshots on failure
-- Credentials: MultiFernet-encrypted at rest, decrypted only in worker memory. Key rotation via `ENCRYPTION_KEY_PREVIOUS`.
-
-### Multi-tenant Auth
-
-API keys are SHA-256 hashed before storage. Lookup by hash + `hmac.compare_digest` for timing safety. All data queries scoped by `user_id` through `src/db/queries.py` — no raw `select(Model)` in route handlers.
 
 ---
 
@@ -317,7 +336,7 @@ src/
     workflow.py         Durable workflow: login → extract_all → finalise
     steps.py            Step functions with batched DB writes
     concurrency.py      Per-bank semaphore
-deploy/cdk/             CDK stack (VPC, RDS, ECS, ALB, S3)
+deploy/cdk/             Two-stack CDK (Foundation + App)
 alembic/                Database migrations
 tests/                  Unit tests
 ```
