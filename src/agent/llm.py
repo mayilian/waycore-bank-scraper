@@ -72,7 +72,7 @@ class AnthropicClient:
         )
         if not msg.content or not hasattr(msg.content[0], "text"):
             raise ValueError("LLM returned empty or non-text response")
-        return msg.content[0].text
+        return str(msg.content[0].text)
 
 
 class OpenAIClient:
