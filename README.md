@@ -2,7 +2,7 @@
 
 Durable browser automation that logs into bank portals, completes OTP challenges, and extracts accounts, transactions, and balances into PostgreSQL. Survives crashes mid-sync, handles OTP pause/resume, writes idempotent data.
 
-**Demo result:** 3 accounts, 130 transactions, 3 balance snapshots from [Heritage Trust Bank](https://demo-bank-2.vercel.app) in ~2 minutes.
+**Demo result:** 3 accounts, 130 transactions, 3 balance snapshots from [Heritage Trust Bank](https://demo-bank-2.vercel.app) in ~60 seconds.
 
 ---
 
@@ -94,19 +94,16 @@ uv run waycore sync \
 ### Expected output
 
 ```
-✓ Job created: b9103d52-...
-  Bank: heritage_bank  URL: https://demo-bank-2.vercel.app
+✓ Job created: 690b58ab-...
+  Bank: heritage_bank  URL: https://demo-bank-2.vercel.app/
 
 Live step trace (polling every 2s):
 
-  ✓ login                                     20.2s
-  ✓ get_accounts                              9.4s
-  ✓ transactions_583761204                    17.2s
-  ✓ balance_583761204                         17.6s
-  ✓ transactions_583769842                    16.7s
-  ✓ balance_583769842                         16.5s
-  ✓ transactions_739220031                    16.7s
-  ✓ balance_739220031                         17.1s
+  ✓ login                                     18.9s
+  ✓ extract_583761204                         40.0s
+  ✓ extract_583769842                         40.0s
+  ✓ extract_739220031                         40.0s
+  ✓ extract_all                               40.0s
   ✓ finalise                                  0.0s
 
 ✓ Sync complete. Accounts: 3  Transactions: 130
@@ -146,9 +143,19 @@ make jobs           # list sync jobs
 CLI (typer) → Restate (durable workflow) → Worker (Playwright + LLM) → PostgreSQL
 ```
 
-### Why Restate?
+### Workflow design
 
-Each sync is a chain of steps: login → OTP → accounts → per-account transactions → per-account balance. Restate journals each step — if the worker crashes mid-extraction, replay resumes from the last completed step. No re-login, no duplicate data. OTP pause (`ctx.promise`) suspends with zero resources until the code arrives.
+Step boundaries are aligned with browser session economics:
+
+```
+Browser #1 (login)       — login, OTP, capture session cookies
+Browser #2 (extract_all) — restore session, discover accounts,
+                           extract txns + balance for ALL accounts
+                           in one browser session
+(no browser) finalise    — mark job complete
+```
+
+This gives **2 browser launches per sync** regardless of account count. Restate journals each step — if the worker crashes, replay resumes from the last completed step. OTP pause (`ctx.promise`) suspends with zero resources until the code arrives.
 
 ### Tiered extraction
 
@@ -157,7 +164,7 @@ Tier 1 — Deterministic DOM parsing    Known selectors, direct table reads.
                                       Zero LLM cost. Sub-second extraction.
                                       Built per bank during onboarding.
          ↓ (selector miss)
-Tier 2 — LLM text-only               DOM summary → LLM → structured JSON.
+Tier 2 — LLM text-only               Task-specific DOM summary → LLM → JSON.
                                       ~2K tokens, handles UI changes
                                       automatically.
          ↓ (ambiguous DOM)
@@ -179,23 +186,28 @@ The LLM provider is pluggable via `LLM_PROVIDER` env var:
 | Anthropic (default) | `uv sync --extra anthropic` | `ANTHROPIC_API_KEY`, `LLM_MODEL` (default: claude-sonnet-4-6) |
 | OpenAI | `uv sync --extra openai` | `OPENAI_API_KEY`, `LLM_MODEL` (default: gpt-4o) |
 
-### Performance bottlenecks
+### Browser policy
 
-The real throughput constraint is browser economics, not orchestration:
-- Each step launches a fresh Playwright browser (~3-5s startup)
-- SPA navigation + rendering adds ~3-5s per page
-- Per-account steps run sequentially (3 accounts × 2 steps = 6 browser sessions)
+Each adapter declares a `BrowserPolicy` (viewport, locale, timezone, user agent) so stealth configuration matches the bank's expectations. The default policy uses common US desktop settings. Per-bank overrides are set in the adapter class.
+
+### Performance
+
+The real throughput constraint is browser lifecycle, not orchestration:
+- Two browser launches per sync (login + extract_all) regardless of account count
+- SPA navigation + rendering adds ~3-5s per account-detail page
 - Stealth measures (bezier mouse, per-key typing) add latency on the generic path
+- All accounts are extracted sequentially in one browser session
 
-Restate scales orchestration horizontally, but actual throughput is limited by browser memory, anti-bot pacing, and LLM latency when fallbacks activate.
+Restate scales orchestration horizontally, but actual throughput is limited by browser memory, anti-bot pacing, and LLM latency when fallbacks activate. A warm browser pool (borrowing pre-launched browsers instead of starting fresh) would reduce startup cost further — the adapter/step interfaces are structured to support this, but it is not yet implemented.
 
 ### Data model
 
 - `NUMERIC(20,4)` + Python `Decimal` for all money — no float precision loss
 - Transactions: `UNIQUE(account_id, external_id)` + `ON CONFLICT DO NOTHING` — idempotent syncs
 - Balances: append-only (never UPDATE) — full balance history
+- `account_sync_results`: first-class per-account outcome tracking (partial success)
 - `sync_steps`: audit trail with screenshot paths and tracebacks on failure
-- Multi-tenant: organizations → users → bank_connections → accounts → transactions/balances
+- Multi-tenant schema (organizations → users → bank_connections → accounts), currently single-tenant in application behavior (CLI hardcodes demo org/user)
 
 ---
 
@@ -215,6 +227,9 @@ All settings are environment variables (see `.env.example`):
 | Variable | Default | Description |
 |---|---|---|
 | `DATABASE_URL` | `postgresql+asyncpg://waycore:waycore@localhost:5432/waycore` | Postgres connection |
+| `DB_POOL_SIZE` | `5` | Connection pool size |
+| `DB_MAX_OVERFLOW` | `10` | Max overflow connections |
+| `DB_POOL_RECYCLE` | `3600` | Recycle connections after N seconds |
 | `ENCRYPTION_KEY` | (required) | Fernet key for credential encryption |
 | `LLM_PROVIDER` | `anthropic` | `anthropic` or `openai` |
 | `LLM_MODEL` | provider default | Override model name |
@@ -228,13 +243,16 @@ All settings are environment variables (see `.env.example`):
 | `BROWSER_TIMEZONE` | `America/New_York` | Browser timezone |
 | `SCREENSHOT_BACKEND` | `local` | `local` or `s3` (requires `uv sync --extra s3`) |
 
+Docker Compose ports are configurable via env vars: `DB_PORT`, `RESTATE_INGRESS_PORT`, `RESTATE_ADMIN_PORT`, `WORKER_PORT`.
+
 ---
 
 ## Adding a New Bank
 
 1. Create `src/adapters/<slug>_adapter.py` implementing `BankAdapter`
-2. Register in `ADAPTER_REGISTRY` in `src/adapters/__init__.py`
-3. CLI auto-detects the slug from the URL domain
+2. Optionally set `browser_policy` for locale/timezone matching
+3. Register in `ADAPTER_REGISTRY` in `src/adapters/__init__.py`
+4. CLI auto-detects the slug from the URL domain
 
 Unknown bank URLs automatically use `GenericBankAdapter` (Tier 3 — full LLM).
 
@@ -243,7 +261,7 @@ Unknown bank URLs automatically use `GenericBankAdapter` (Tier 3 — full LLM).
 ```
 cli.py              CLI entry point: sync, otp, jobs, transactions, accounts
 src/
-  adapters/         BankAdapter ABC + per-bank implementations
+  adapters/         BankAdapter ABC + per-bank implementations + parsers
   agent/            LLM client abstraction + per-goal extraction functions
   core/             Config, Fernet crypto, structlog, Playwright stealth
   db/               SQLAlchemy models, async session factory
@@ -256,15 +274,15 @@ alembic/            Database migrations
 
 ### Must do
 
-- [ ] **Combine transactions + balance steps** — Each account currently opens 2 browsers. Combining into one step per account saves ~24s (3 accounts × 8s browser overhead).
 - [ ] **Infinite scroll handling** — Only "Next" button pagination works. Banks using infinite scroll need: scroll to bottom → wait for new rows → extract → repeat.
 - [ ] **CSV/PDF export fast path** — `try_export()` on BankAdapter. Download + parse is faster and more reliable than DOM parsing for bulk history.
 
 ### Should do
 
+- [ ] **Warm browser pool** — Pre-launch browsers, hand out fresh contexts per step. Reduces ~3-5s startup cost per browser launch.
 - [ ] **GenericAdapter end-to-end testing** — All testing was against Heritage (demo bank). Generic adapter needs validation against a second bank.
 - [ ] **Auto-promote LLM discoveries** — When LLM fallback finds working selectors, cache them per `bank_slug` so next sync uses Tier 1.
-- [ ] **Parallel account extraction** — Extract transactions for multiple accounts concurrently (separate browser tabs).
+- [ ] **Parallel account extraction** — Extract transactions for multiple accounts concurrently (separate browser tabs within one context).
 - [ ] **Date-range pagination** — For banks without Next buttons, iterate by date range (monthly chunks).
 
 ### Design scope (not handling yet)
@@ -284,6 +302,6 @@ alembic/            Database migrations
 | Screenshots | Local filesystem | S3 / Cloudflare R2 (`uv sync --extra s3`) |
 | Compute | `hypercorn` | ECS / Kubernetes |
 
-Configuration is via environment variables. Cloud migration requires updating `DATABASE_URL`, `RESTATE_INGRESS_URL`, screenshot backend settings, and `BROWSER_*` settings to match the deployment region. Ports (`WORKER_PORT`) and browser identity settings are all configurable.
+Configuration is via environment variables. Cloud migration requires updating `DATABASE_URL`, `RESTATE_INGRESS_URL`, screenshot backend settings, and `BROWSER_*` settings to match the deployment region. All ports and pool settings are configurable.
 
-**Demo shortcuts still in code:** Single-tenant org/user IDs in `cli.py` (hardcoded UUIDs for the demo — production would use real auth). Browser viewport is fixed at 1366x768.
+**Demo shortcuts still in code:** Single-tenant org/user IDs in `cli.py` (hardcoded UUIDs for the demo — production would use real auth).

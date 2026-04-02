@@ -6,7 +6,7 @@ services:
       POSTGRES_USER: waycore
       POSTGRES_PASSWORD: waycore
     ports:
-      - "5432:5432"
+      - "${DB_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -18,8 +18,8 @@ services:
   restate:
     image: docker.io/restatedev/restate:latest
     ports:
-      - "8080:8080"   # ingress (workflow triggers + signals)
-      - "9070:9070"   # admin (deployment registration)
+      - "${RESTATE_INGRESS_PORT:-8080}:8080"   # ingress (workflow triggers + signals)
+      - "${RESTATE_ADMIN_PORT:-9070}:9070"     # admin (deployment registration)
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:9070/health || exit 1"]
       interval: 5s
@@ -33,7 +33,7 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://waycore:waycore@postgres:5432/waycore
     ports:
-      - "9000:9000"
+      - "${WORKER_PORT:-9000}:9000"
     depends_on:
       postgres:
         condition: service_healthy
