@@ -34,7 +34,7 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
 # Install Python dependencies first (layer cache)
 COPY pyproject.toml uv.lock* ./
-RUN uv sync --frozen --no-dev --extra anthropic
+RUN uv sync --frozen --no-dev --extra all
 
 # Install Playwright Chromium (auto-detects arch: amd64 or arm64)
 RUN uv run playwright install chromium

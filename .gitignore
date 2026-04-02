@@ -10,6 +10,7 @@ dist/
 data/
 *.egg-info/
 restate-data/
+restate-config.toml
 deploy/cdk/cdk.out/
 deploy/cdk/cdk.context.json
 memory/

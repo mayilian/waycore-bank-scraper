@@ -24,6 +24,13 @@ CLI (`cli.py`) for local dev. Both API and CLI call `src/core/operations.py`.
 7. Use `structlog` for logging (never `print()` or stdlib `logging` directly). Bind `job_id` in workflow steps.
 8. Type hints on all function signatures. Constrained values use `Literal` types.
 9. `asyncio.sleep` not `time.sleep` in async code. f-strings not `.format()`.
+10. LLM provider is configurable (`LLM_PROVIDER=anthropic|bedrock|openai`). Never hardcode a provider.
+
+## Concurrency Model
+
+- Two-layer limiter: global max browsers per worker (`max_concurrent_syncs=5`) + per-bank max (`max_concurrent_per_bank=3`).
+- Both login and extract are gated by the limiter — not just extract.
+- Semaphores are process-local. For multi-worker deployments, distributed locking (Redis/DynamoDB) would be needed.
 
 ## Constraints (not enforced by code, but should be)
 
@@ -35,6 +42,7 @@ CLI (`cli.py`) for local dev. Both API and CLI call `src/core/operations.py`.
 After every meaningful chunk of code:
 - `/review` — principal engineer review
 - `/style` — style consistency check
+- `make check` — runs lint + tests
 
 ## Key Files
 
@@ -42,10 +50,13 @@ After every meaningful chunk of code:
 src/core/operations.py     Shared business logic (CLI + API both call this)
 src/worker/workflow.py     Durable workflow: login → extract_all → finalise
 src/worker/steps.py        Step functions with batched DB writes
+src/worker/concurrency.py  Global + per-bank concurrency limiter
 src/adapters/base.py       BankAdapter ABC + data models
 src/db/models.py           SQLAlchemy models (multi-tenant)
 src/db/queries.py          Tenant-scoped query helpers
 src/api/schemas.py         API request/response models (Literal-typed)
+src/api/auth.py            API key auth → TenantContext
 src/core/config.py         pydantic-settings (Literal-typed providers)
+src/core/metrics.py        CloudWatch EMF metric emitter
 deploy/cdk/                Two-stack CDK (Foundation + App)
 ```

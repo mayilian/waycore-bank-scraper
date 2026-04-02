@@ -21,7 +21,7 @@ Durable browser automation that logs into bank portals, completes OTP challenges
 
 ## Architecture
 
-![Architecture](diagram.png)
+![Architecture](assets/diagram.png)
 
 ```
 API (FastAPI) ──→ Restate (durable workflow) ──→ Worker (Playwright + LLM) ──→ PostgreSQL
@@ -165,7 +165,7 @@ Secrets (`ENCRYPTION_KEY`, LLM API key) go in AWS Secrets Manager (`waycore/secr
 ```bash
 git clone https://github.com/mayilian/waycore-bank-scraper.git
 cd waycore-bank-scraper
-uv sync --extra anthropic
+uv sync --extra all
 uv run playwright install chromium
 ```
 

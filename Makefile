@@ -3,7 +3,7 @@
 # ── Setup ────────────────────────────────────────────────────────────────────
 
 install:  ## Install dependencies + Playwright browser
-	uv sync --extra anthropic
+	uv sync --extra all
 	uv run playwright install chromium
 
 migrate:  ## Run database migrations
