@@ -212,24 +212,55 @@ RDS storage is $0.115/GB/month (gp3). At 100K connections, ~$70/month for storag
 
 At 50+ tasks, use **RDS Proxy** ($0.015/vCPU-hr) to pool connections and avoid exhausting `max_connections`.
 
-## Bottlenecks & Limits
+## Bottlenecks & Mitigations (Implemented)
 
-| Bottleneck | Limit | Mitigation |
-|---|---|---|
-| Browser memory | 1 sync per 2GB task | Scale task count, not task size |
-| Sync duration | 600s hard cap | Increase cap or split large accounts |
-| LLM budget | 100 calls/sync | Increase for Generic adapter heavy banks |
-| DB connections | RDS max_connections | RDS Proxy at 50+ tasks |
-| NAT Gateway throughput | 45 Gbps | Not a concern below 500 tasks |
-| Bank rate limiting | Varies per bank | Per-bank concurrency limits (not yet implemented) |
-| Fargate task launch | ~30-60s cold start | Keep min tasks warm, or use EC2 capacity provider |
+| Bottleneck | Before | After | Implementation |
+|---|---|---|---|
+| Browser memory | ~900MB peak, OOM risk on 2GB | ~600MB peak, stable headroom | Chromium flags: `--disable-gpu`, `--no-zygote`, `--js-flags=--max-old-space-size=256`, `--disable-extensions` in `stealth.py` |
+| DB connections at scale | 50 tasks × 15 pool = 750 connections → exhausts RDS | NullPool when behind proxy | `USE_RDS_PROXY=true` → `NullPool` in `session.py`, proxy handles pooling |
+| Bank rate limiting | No limit — 50 syncs hit one bank simultaneously | 3 concurrent per bank_slug | `acquire_bank_slot()` semaphore in `concurrency.py`, wired into workflow |
+| DB round trips | ~8 sessions per sync (1 per account per table) | 1 batch session for all writes | Batch insert transactions, balances, sync_results, steps in `steps.py` |
+| Compute cost | $0.04048/vCPU-hr (amd64, on-demand) | $0.01619/vCPU-hr (arm64 Spot) | Multi-arch Dockerfile + Spot capacity provider in `deploy/ecs-service-spot.json` |
+| Fargate task launch | ~30-60s cold start | ~30-60s (unchanged) | Mitigated by Spot base=1 (always warm) + Restate retry on Spot reclaim |
+
+### Before/After Cost at 10K Connections
+
+| Component | Before | After | Savings |
+|---|---|---|---|
+| Fargate compute (50 tasks, 5 hrs/day) | $200/mo | **$52/mo** | 74% (Graviton + Spot) |
+| RDS | $200/mo (r6g.large) | **$200/mo** + $20 Proxy | — (Proxy prevents connection exhaustion) |
+| DB round trips | ~8 per sync × 10K = 80K/day | ~2 per sync × 10K = 20K/day | 75% fewer DB sessions |
+| LLM API | $90/mo | $90/mo | — (depends on adapter tier, not infra) |
+| **Total** | **$596/mo** | **~$370/mo** | **~38% reduction** |
+
+### Before/After Cost at 100K Connections
+
+| Component | Before | After | Savings |
+|---|---|---|---|
+| Fargate compute (200 tasks, 12 hrs/day) | $1,600/mo | **$416/mo** | 74% |
+| RDS + Proxy | $1,200/mo | **$1,200/mo** + $80 Proxy | Prevents connection exhaustion |
+| LLM API | $900/mo | $900/mo | — |
+| **Total** | **$4,257/mo** | **~$2,700/mo** | **~37% reduction** |
+
+## Remaining Bottlenecks
+
+| Bottleneck | Limit | Status | Mitigation |
+|---|---|---|---|
+| Sync duration | 600s hard cap | Configurable | Increase `MAX_SYNC_DURATION_SECS` for banks with many accounts |
+| LLM budget | 100 calls/sync | Configurable | Increase `MAX_LLM_CALLS_PER_SYNC` for Generic-adapter banks |
+| NAT Gateway throughput | 45 Gbps | Not a concern below 500 tasks | — |
+| Fargate cold start | ~30-60s | Partially mitigated | Spot base=1 keeps 1 warm; EC2 capacity provider for zero cold start |
+| Browser per task | 1 sync per task | Architectural | Warm browser pool (future) would allow reuse |
 
 ## Cost Optimization Levers
 
 1. **Promote banks to Tier 1** — Each bank with deterministic selectors saves $0.07-0.15/sync in LLM costs and ~30s in sync time
 2. **Reduce sync frequency** — 1x/day vs 4x/day is 4x compute savings
-3. **Fargate Spot** — 70% discount on compute, but tasks can be interrupted (Restate handles replay)
-4. **Right-size RDS** — Start with db.t4g.micro, upgrade when CPU credits deplete
-5. **Warm browser pool** (future) — Eliminates 3-5s browser launch overhead per sync, ~5% compute savings
-6. **Batch scheduling** — Spread syncs across off-peak hours for lower Spot pricing
-7. **ARM64 (Graviton)** — 20% cheaper Fargate pricing, Playwright supports arm64 Chromium
+3. **Fargate Spot** — 70% discount on compute, Restate handles replay on reclaim *(implemented: `deploy/ecs-service-spot.json`)*
+4. **ARM64 Graviton** — 20% cheaper Fargate pricing *(implemented: multi-arch Dockerfile)*
+5. **RDS Proxy** — Prevents connection exhaustion at scale *(implemented: `USE_RDS_PROXY` config)*
+6. **Batch DB writes** — 75% fewer DB round trips per sync *(implemented: batched inserts in `steps.py`)*
+7. **Per-bank concurrency** — Prevents IP blocks from parallel logins *(implemented: `concurrency.py`)*
+8. **Right-size RDS** — Start with db.t4g.micro, upgrade when CPU credits deplete
+9. **Warm browser pool** (future) — Eliminates 3-5s browser launch overhead per sync
+10. **Batch scheduling** — Spread syncs across off-peak hours for lower Spot pricing

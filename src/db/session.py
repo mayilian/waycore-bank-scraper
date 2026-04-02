@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
+from sqlalchemy.pool import NullPool
 
 from src.core.config import settings
 
@@ -24,14 +25,23 @@ _session_factory: async_sessionmaker[AsyncSession] | None = None
 def _get_engine() -> AsyncEngine:
     global _engine
     if _engine is None:
-        _engine = create_async_engine(
-            settings.database_url,
-            pool_pre_ping=True,
-            pool_size=settings.db_pool_size,
-            max_overflow=settings.db_max_overflow,
-            pool_recycle=settings.db_pool_recycle,
-            echo=settings.db_echo,
-        )
+        if settings.use_rds_proxy:
+            # RDS Proxy handles connection pooling — use NullPool to avoid
+            # double-pooling and connection exhaustion at 50+ Fargate tasks.
+            _engine = create_async_engine(
+                settings.database_url,
+                poolclass=NullPool,
+                echo=settings.db_echo,
+            )
+        else:
+            _engine = create_async_engine(
+                settings.database_url,
+                pool_pre_ping=True,
+                pool_size=settings.db_pool_size,
+                max_overflow=settings.db_max_overflow,
+                pool_recycle=settings.db_pool_recycle,
+                echo=settings.db_echo,
+            )
     return _engine
 
 

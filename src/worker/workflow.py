@@ -27,6 +27,7 @@ from src.core.logging import get_logger
 from src.db.models import SyncJob
 from src.db.session import get_session
 from src.worker import steps
+from src.worker.concurrency import acquire_bank_slot
 
 log = get_logger(__name__)
 
@@ -118,18 +119,20 @@ async def _run_sync(
     bank_slug: str = login_result["bank_slug"]
 
     # ── Step 2: Extract all accounts (browser #2) ─────────────────────────────
-    # One browser session: discover accounts → extract txns + balance for each.
-    extract_result: dict[str, Any] = await ctx.run(
-        "extract_all",
-        functools.partial(
-            steps.step_extract_all,
-            connection_id,
-            job_id,
-            session_state,
-            post_login_url,
-            bank_slug,
-        ),
-    )
+    # Per-bank concurrency limiter prevents hammering one bank with too many
+    # simultaneous browser sessions. Banks rate-limit or block IPs on parallel logins.
+    async with acquire_bank_slot(bank_slug):
+        extract_result: dict[str, Any] = await ctx.run(
+            "extract_all",
+            functools.partial(
+                steps.step_extract_all,
+                connection_id,
+                job_id,
+                session_state,
+                post_login_url,
+                bank_slug,
+            ),
+        )
 
     account_errors: list[str] = extract_result.get("errors", [])
     accounts_found: int = extract_result.get("accounts_found", 0)

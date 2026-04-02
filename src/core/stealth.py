@@ -44,6 +44,17 @@ async def stealth_browser(
             "--no-first-run",
             "--no-default-browser-check",
             "--disable-infobars",
+            # Memory optimizations for containerized environments (Fargate/Fly)
+            "--disable-gpu",
+            "--disable-extensions",
+            "--disable-background-networking",
+            "--disable-default-apps",
+            "--disable-translate",
+            "--disable-sync",
+            "--metrics-recording-only",
+            "--no-zygote",
+            # Cap renderer memory to prevent OOM on heavy SPAs
+            "--js-flags=--max-old-space-size=256",
         ]
         if policy and policy.extra_args:
             launch_args.extend(policy.extra_args)

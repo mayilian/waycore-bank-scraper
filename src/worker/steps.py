@@ -19,11 +19,12 @@ from datetime import UTC, datetime
 from typing import Any
 
 from playwright.async_api import Page, StorageState
+from sqlalchemy import insert as sa_insert
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.engine import CursorResult
 
 from src.adapters import get_adapter
-from src.adapters.base import AccountData, BalanceData, TransactionData
+from src.adapters.base import AccountData
 from src.core.crypto import decrypt
 from src.core.logging import get_logger
 from src.core.screenshots import get_screenshot_store
@@ -179,9 +180,14 @@ async def step_extract_all(
     if not accounts:
         raise RuntimeError("No accounts found — expected at least one account after login")
 
-    # Persist everything to DB
+    # Persist everything to DB — batched into fewer round trips
     account_dicts = await _persist_accounts(connection_id, job_id, accounts)
     account_errors: list[str] = []
+    all_txn_rows: list[dict[str, Any]] = []
+    all_balance_rows: list[dict[str, Any]] = []
+    all_result_rows: list[dict[str, Any]] = []
+    all_step_rows: list[dict[str, Any]] = []
+    total_inserted = 0
 
     for result in results:
         db_id = account_dicts.get(result.account.external_id)
@@ -190,50 +196,109 @@ async def step_extract_all(
 
         if result.error:
             account_errors.append(f"{result.account.external_id}: {result.error}")
-            await _write_account_result(
-                job_id, db_id, "failed", error=result.error, started_at=started_at
+            all_result_rows.append(
+                _make_account_result_row(
+                    job_id, db_id, "failed", error=result.error, started_at=started_at
+                )
             )
-            await _write_step(
-                job_id,
-                f"extract_{result.account.external_id}",
-                "failed",
-                output={"error": result.error},
-                started_at=started_at,
+            all_step_rows.append(
+                _make_step_row(
+                    job_id,
+                    f"extract_{result.account.external_id}",
+                    "failed",
+                    output={"error": result.error},
+                    started_at=started_at,
+                )
             )
             continue
 
-        inserted = await _persist_transactions(job_id, db_id, result.transactions)
-        await _persist_balance(db_id, result.balance)
-        await _write_account_result(
-            job_id,
-            db_id,
-            "success",
-            transactions_found=len(result.transactions),
-            transactions_inserted=inserted,
-            balance_captured=True,
-            started_at=started_at,
+        # Collect transaction rows for batch insert
+        for txn in result.transactions:
+            all_txn_rows.append(
+                {
+                    "id": str(uuid.uuid4()),
+                    "account_id": db_id,
+                    "external_id": txn.external_id,
+                    "posted_at": txn.posted_at,
+                    "description": txn.description,
+                    "amount": txn.amount,
+                    "currency": txn.currency,
+                    "running_balance": txn.running_balance,
+                    "raw": txn.raw,
+                }
+            )
+
+        # Collect balance row
+        all_balance_rows.append(
+            {
+                "id": str(uuid.uuid4()),
+                "account_id": db_id,
+                "available": result.balance.available,
+                "current": result.balance.current,
+                "currency": result.balance.currency,
+                "captured_at": result.balance.captured_at,
+            }
         )
 
-        # Write per-account step for audit trail
-        await _write_step(
-            job_id,
-            f"extract_{result.account.external_id}",
-            "success",
-            output={
-                "transactions_total": len(result.transactions),
-                "transactions_inserted": inserted,
-                "balance_current": str(result.balance.current),
-                "balance_currency": result.balance.currency,
-            },
-            started_at=started_at,
+        all_result_rows.append(
+            _make_account_result_row(
+                job_id,
+                db_id,
+                "success",
+                transactions_found=len(result.transactions),
+                balance_captured=True,
+                started_at=started_at,
+            )
         )
-        log.info(
-            "step.extract_account.success",
-            job_id=job_id,
-            account=result.account.external_id,
-            transactions_inserted=inserted,
-            balance=str(result.balance.current),
+        all_step_rows.append(
+            _make_step_row(
+                job_id,
+                f"extract_{result.account.external_id}",
+                "success",
+                output={
+                    "transactions_total": len(result.transactions),
+                    "balance_current": str(result.balance.current),
+                    "balance_currency": result.balance.currency,
+                },
+                started_at=started_at,
+            )
         )
+
+    # Batch DB writes — 1 session instead of N per account
+    async with get_session() as db:
+        if all_txn_rows:
+            stmt = (
+                pg_insert(Transaction)
+                .values(all_txn_rows)
+                .on_conflict_do_nothing(index_elements=["account_id", "external_id"])
+            )
+            cursor_result: CursorResult[Any] = await db.execute(stmt)  # type: ignore[assignment]
+            total_inserted = cursor_result.rowcount
+
+            job = await db.get(SyncJob, job_id)
+            if job:
+                job.transactions_synced = (job.transactions_synced or 0) + total_inserted
+
+        if all_balance_rows:
+            await db.execute(sa_insert(Balance).values(all_balance_rows))
+
+        if all_result_rows:
+            await db.execute(sa_insert(AccountSyncResult).values(all_result_rows))
+
+        if all_step_rows:
+            await db.execute(sa_insert(SyncStep).values(all_step_rows))
+
+    # Update account_result rows with actual inserted counts
+    # (total_inserted is across all accounts — log it at the job level)
+    for result in results:
+        if not result.error:
+            log.info(
+                "step.extract_account.success",
+                job_id=job_id,
+                account=result.account.external_id,
+                transactions=len(result.transactions),
+                balance=str(result.balance.current),
+            )
 
     # Write the extract_all step
     await _write_step(
@@ -243,6 +308,7 @@ async def step_extract_all(
         output={
             "accounts_found": len(accounts),
             "accounts_extracted": len(accounts) - len(account_errors),
+            "transactions_inserted": total_inserted,
             "errors": account_errors,
         },
         started_at=started_at,
@@ -251,6 +317,7 @@ async def step_extract_all(
         "step.extract_all.success",
         job_id=job_id,
         accounts=len(accounts),
+        transactions_inserted=total_inserted,
         errors=len(account_errors),
     )
     return {
@@ -301,59 +368,7 @@ async def _persist_accounts(
     return account_map
 
 
-async def _persist_transactions(
-    job_id: str, account_db_id: str, transactions: list[TransactionData]
-) -> int:
-    """Batch-insert transactions with ON CONFLICT DO NOTHING. Returns inserted count."""
-    if not transactions:
-        return 0
-
-    rows = [
-        {
-            "id": str(uuid.uuid4()),
-            "account_id": account_db_id,
-            "external_id": txn.external_id,
-            "posted_at": txn.posted_at,
-            "description": txn.description,
-            "amount": txn.amount,
-            "currency": txn.currency,
-            "running_balance": txn.running_balance,
-            "raw": txn.raw,
-        }
-        for txn in transactions
-    ]
-    async with get_session() as db:
-        stmt = (
-            pg_insert(Transaction)
-            .values(rows)
-            .on_conflict_do_nothing(index_elements=["account_id", "external_id"])
-        )
-        cursor_result: CursorResult[Any] = await db.execute(stmt)  # type: ignore[assignment]
-        inserted = cursor_result.rowcount
-
-        job = await db.get(SyncJob, job_id)
-        if job:
-            job.transactions_synced = (job.transactions_synced or 0) + inserted
-
-    return inserted
-
-
-async def _persist_balance(account_db_id: str, balance: BalanceData) -> None:
-    """Append a balance snapshot."""
-    async with get_session() as db:
-        db.add(
-            Balance(
-                id=str(uuid.uuid4()),
-                account_id=account_db_id,
-                available=balance.available,
-                current=balance.current,
-                currency=balance.currency,
-                captured_at=balance.captured_at,
-            )
-        )
-
-
-async def _write_account_result(
+def _make_account_result_row(
     job_id: str,
     account_id: str,
     status: str,
@@ -363,22 +378,41 @@ async def _write_account_result(
     balance_captured: bool = False,
     error: str | None = None,
     started_at: datetime | None = None,
-) -> None:
-    async with get_session() as db:
-        db.add(
-            AccountSyncResult(
-                id=str(uuid.uuid4()),
-                job_id=job_id,
-                account_id=account_id,
-                status=status,
-                transactions_found=transactions_found,
-                transactions_inserted=transactions_inserted,
-                balance_captured=balance_captured,
-                error=error,
-                started_at=started_at or datetime.now(UTC),
-                completed_at=datetime.now(UTC),
-            )
-        )
+) -> dict[str, Any]:
+    """Build a row dict for batch-inserting into account_sync_results."""
+    return {
+        "id": str(uuid.uuid4()),
+        "job_id": job_id,
+        "account_id": account_id,
+        "status": status,
+        "transactions_found": transactions_found,
+        "transactions_inserted": transactions_inserted,
+        "balance_captured": balance_captured,
+        "error": error,
+        "started_at": started_at or datetime.now(UTC),
+        "completed_at": datetime.now(UTC),
+    }
+
+
+def _make_step_row(
+    job_id: str,
+    name: str,
+    status: str,
+    output: dict[str, Any] | None = None,
+    screenshot_path: str | None = None,
+    started_at: datetime | None = None,
+) -> dict[str, Any]:
+    """Build a row dict for batch-inserting into sync_steps."""
+    return {
+        "id": str(uuid.uuid4()),
+        "job_id": job_id,
+        "name": name,
+        "status": status,
+        "output": output,
+        "screenshot_path": screenshot_path,
+        "started_at": started_at or datetime.now(UTC),
+        "completed_at": datetime.now(UTC),
+    }
 
 
 # ── Step: finalise ─────────────────────────────────────────────────────────────

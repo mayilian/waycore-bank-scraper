@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     db_max_overflow: int = 10
     db_pool_recycle: int = 3600  # seconds — recycle connections after 1 hour
     db_echo: bool = False  # set True for SQL logging in development
+    use_rds_proxy: bool = False  # set True when behind RDS Proxy — uses NullPool
     anthropic_api_key: str = ""
     openai_api_key: str = ""
     llm_provider: str = "anthropic"  # "anthropic" or "openai"
@@ -34,6 +35,7 @@ class Settings(BaseSettings):
     max_sync_duration_secs: int = 600  # 10 minutes — hard cap per sync job
     max_pages_per_account: int = 50  # pagination limit per account
     max_llm_calls_per_sync: int = 100  # LLM API call budget per sync job
+    max_concurrent_per_bank: int = 3  # max simultaneous syncs against one bank_slug
 
     # Screenshot backend: "local" or "s3"
     screenshot_backend: str = "local"

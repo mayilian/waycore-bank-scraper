@@ -1,4 +1,7 @@
-FROM python:3.12-slim AS base
+# Multi-arch build: supports amd64 and arm64 (Graviton)
+# Build: docker buildx build --platform linux/amd64,linux/arm64 -t waycore-worker .
+# Graviton (arm64) is 20% cheaper on Fargate.
+FROM python:3.12-slim
 
 # System deps for Playwright Chromium on headless Linux
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -34,7 +37,7 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 COPY pyproject.toml uv.lock* ./
 RUN uv sync --frozen --no-dev --extra anthropic
 
-# Install Playwright Chromium
+# Install Playwright Chromium (auto-detects arch: amd64 or arm64)
 RUN uv run playwright install chromium
 
 COPY . .
