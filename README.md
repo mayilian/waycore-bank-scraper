@@ -9,6 +9,7 @@ Durable browser automation that logs into bank portals, completes OTP challenges
 - [Quick Start](#quick-start)
 - [Architecture](#architecture)
 - [Design Decisions & Tradeoffs](#design-decisions--tradeoffs)
+- [Live Demo (AWS)](#live-demo-aws)
 - [Local Setup](#local-setup)
 - [AWS Deployment (CDK)](#aws-deployment-cdk)
 - [Current Limits & Scaling](#current-limits--scaling)
@@ -103,6 +104,44 @@ Heritage adapter runs Tier 1 in the happy path. LLM is never instantiated unless
 | **CDK split** | Two stacks (Foundation + App) | Single stack | Solves ECR chicken-and-egg: Foundation creates repos, images get pushed, then App creates services that pull them. |
 | **DB connection pooling** | SQLAlchemy async pool (configurable) + RDS Proxy support | PgBouncer sidecar | Fewer moving parts. RDS Proxy handles connection multiplexing in production. Toggle with `USE_RDS_PROXY=true`. |
 | **Screenshot storage** | Local filesystem (dev) / S3 (prod) | Always S3 | Local is simpler for dev. S3 with 30-day lifecycle for prod — failure screenshots auto-expire. |
+
+---
+
+## Live Demo (AWS)
+
+The API is deployed on AWS ECS Fargate. Try it with the key below:
+
+```bash
+API=http://WayCor-Alb16-5ymcXrsxQf5t-1632089673.us-east-1.elb.amazonaws.com
+KEY=wc_XzwB57iZjJA6TI0LPN6Pn0O4fd-whlFsN8ljzx-TYxU
+
+# Health check (no auth)
+curl $API/healthz
+
+# List accounts
+curl $API/v1/accounts -H "Authorization: Bearer $KEY"
+
+# Single account detail
+curl $API/v1/accounts/ACCOUNT_ID -H "Authorization: Bearer $KEY"
+
+# Balance history for an account
+curl $API/v1/accounts/ACCOUNT_ID/balances -H "Authorization: Bearer $KEY"
+
+# Transactions (filter by account, paginate)
+curl "$API/v1/transactions?account_id=ACCOUNT_ID&limit=10" -H "Authorization: Bearer $KEY"
+
+# Sync jobs with step-by-step breakdown
+curl $API/v1/jobs -H "Authorization: Bearer $KEY"
+curl $API/v1/jobs/JOB_ID -H "Authorization: Bearer $KEY"
+
+# Trigger a new sync (~60s)
+curl -X POST $API/v1/connections/a2d4560d-e93b-4d73-b6e3-e21bf823cde3/sync \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"otp_mode":"static","otp":"123456"}'
+```
+
+Swagger UI: `$API/docs`
 
 ---
 
