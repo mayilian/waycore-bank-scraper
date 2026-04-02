@@ -52,9 +52,7 @@ async def get_job(db: AsyncSession, job_id: str, user_id: str) -> SyncJob | None
     return result.scalars().first()
 
 
-async def get_job_steps(
-    db: AsyncSession, job_id: str, user_id: str
-) -> list[SyncStep]:
+async def get_job_steps(db: AsyncSession, job_id: str, user_id: str) -> list[SyncStep]:
     result = await db.execute(
         select(SyncStep)
         .join(SyncJob)
