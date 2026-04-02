@@ -18,9 +18,7 @@ async def list_transactions(
     tenant: TenantContext = Depends(get_tenant),
 ) -> list[TransactionResponse]:
     async with get_session() as db:
-        txn_list = await queries.list_transactions(
-            db, tenant.user_id, account_id, limit, offset
-        )
+        txn_list = await queries.list_transactions(db, tenant.user_id, account_id, limit, offset)
     return [
         TransactionResponse(
             id=t.id,
