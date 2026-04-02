@@ -105,6 +105,7 @@ class TestAuthBoundaries:
             resp = await client.post(
                 f"/v1/connections/{uuid.uuid4()}/sync",
                 headers=headers,
+                json={"otp_mode": "static", "otp": "123456"},
             )
             assert resp.status_code == 404
 

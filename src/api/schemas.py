@@ -31,6 +31,7 @@ class ConnectionResponse(BaseModel):
 
 class TriggerSyncRequest(BaseModel):
     otp_mode: OtpMode = "static"
+    otp: str | None = None
 
 
 class TriggerSyncResponse(BaseModel):
