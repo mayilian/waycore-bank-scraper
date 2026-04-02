@@ -117,7 +117,7 @@ class OpenAIClient:
         text = resp.choices[0].message.content
         if not text:
             raise ValueError("LLM returned empty response")
-        return text
+        return str(text)
 
 
 _client: LLMClient | None = None

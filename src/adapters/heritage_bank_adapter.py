@@ -61,7 +61,7 @@ async def _wait_for_spa(page: Page, selector: str, wait_ms: int = 15_000) -> boo
                 const count = document.querySelectorAll(sel).length;
                 return count > 0;
             }""",
-            selector,
+            arg=selector,
             timeout=wait_ms,
         )
         # Brief settle for any trailing renders (replaces fixed 2s sleep)
