@@ -2,9 +2,8 @@
 
 Schema: organizations → users → bank_connections → accounts → transactions / balances.
 
-The multi-tenant hierarchy (Organization, User) exists in the schema but the
-application is currently single-tenant: CLI hardcodes a default org/user.
-Multi-tenant enforcement (RLS, per-session org_id) is not yet implemented.
+Multi-tenant: API uses ApiKey → (org_id, user_id) for tenant scoping.
+CLI hardcodes a default org/user for local dev.
 
 Invariants:
   - All money columns: NUMERIC(20,4) — never Float.
@@ -19,6 +18,7 @@ from typing import Any
 
 from sqlalchemy import (
     JSON,
+    Boolean,
     DateTime,
     ForeignKey,
     Integer,
@@ -73,6 +73,30 @@ class User(Base):
     bank_connections: Mapped[list["BankConnection"]] = relationship(
         "BankConnection", back_populates="user"
     )
+
+
+class ApiKey(Base):
+    """API key for tenant authentication. SHA-256 hashed, never stored in plain text."""
+
+    __tablename__ = "api_keys"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    org_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("organizations.id"), nullable=False, index=True
+    )
+    user_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("users.id"), nullable=False
+    )
+    key_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    key_prefix: Mapped[str] = mapped_column(String(12), nullable=False)  # "wc_abc12..." for display
+    name: Mapped[str | None] = mapped_column(Text)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="true")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    organization: Mapped[Organization] = relationship("Organization")
+    user: Mapped[User] = relationship("User")
 
 
 class BankConnection(Base):

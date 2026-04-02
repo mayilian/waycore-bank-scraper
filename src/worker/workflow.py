@@ -22,8 +22,9 @@ from restate import WorkflowContext, WorkflowSharedContext
 from restate.exceptions import TerminalError
 
 from src.agent.extractor import reset_llm_budget
+from src.core import metrics
 from src.core.config import settings
-from src.core.logging import get_logger
+from src.core.logging import bind_job_context, clear_job_context, get_logger
 from src.db.models import SyncJob
 from src.db.session import get_session
 from src.worker import steps
@@ -92,8 +93,8 @@ async def _mark_job_failed(job_id: str, reason: str) -> None:
 async def _run_sync(
     ctx: WorkflowContext, job_id: str, connection_id: str, otp_mode: str
 ) -> dict[str, Any]:
-    # Reset LLM call budget for this sync
     reset_llm_budget()
+    sync_start = datetime.now(UTC)
 
     # For webhook OTP: suspend before the browser opens (zero resources held).
     webhook_otp: str | None = None
@@ -117,6 +118,8 @@ async def _run_sync(
     session_state: Any = login_result["storage_state"]
     post_login_url: str = login_result["post_login_url"]
     bank_slug: str = login_result["bank_slug"]
+
+    bind_job_context(job_id, connection_id, bank_slug)
 
     # ── Step 2: Extract all accounts (browser #2) ─────────────────────────────
     # Per-bank concurrency limiter prevents hammering one bank with too many
@@ -147,7 +150,11 @@ async def _run_sync(
         functools.partial(steps.step_finalise, job_id, final_status),
     )
 
-    log.info("workflow.complete", job_id=job_id, status=final_status)
+    duration = (datetime.now(UTC) - sync_start).total_seconds()
+    metrics.sync_completed(bank_slug, duration, final_status)
+    clear_job_context()
+
+    log.info("workflow.complete", job_id=job_id, status=final_status, duration_secs=duration)
     return {
         "status": final_status,
         "accounts_found": accounts_found,

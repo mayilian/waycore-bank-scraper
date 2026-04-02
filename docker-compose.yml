@@ -6,7 +6,7 @@ services:
       POSTGRES_USER: waycore
       POSTGRES_PASSWORD: waycore
     ports:
-      - "${DB_PORT:-5432}:5432"
+      - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -18,8 +18,8 @@ services:
   restate:
     image: docker.io/restatedev/restate:latest
     ports:
-      - "${RESTATE_INGRESS_PORT:-8080}:8080"   # ingress (workflow triggers + signals)
-      - "${RESTATE_ADMIN_PORT:-9070}:9070"     # admin (deployment registration)
+      - "8080:8080"   # ingress
+      - "9070:9070"   # admin
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:9070/health || exit 1"]
       interval: 5s
@@ -33,7 +33,7 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://waycore:waycore@postgres:5432/waycore
     ports:
-      - "${WORKER_PORT:-9000}:9000"
+      - "9000:9000"
     depends_on:
       postgres:
         condition: service_healthy
@@ -47,7 +47,24 @@ services:
     volumes:
       - screenshots:/app/data/screenshots
 
-  # Registers the worker service with Restate after both are healthy
+  api:
+    build: .
+    command: uv run uvicorn "src.api.app:app" --host "0.0.0.0" --port 8000
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://waycore:waycore@postgres:5432/waycore
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/healthz || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Registers the worker with Restate after both are healthy
   register:
     image: curlimages/curl:latest
     depends_on:

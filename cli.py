@@ -8,60 +8,35 @@ Usage:
 """
 
 import asyncio
-import uuid
-from datetime import UTC, datetime
-from typing import Annotated, Any
-from urllib.parse import urlparse
+from typing import Annotated
 
-import httpx
 import typer
 from rich.console import Console
 from rich.table import Table
 from sqlalchemy import select
 
-from src.core.config import settings
-from src.core.crypto import encrypt
 from src.core.logging import configure_logging
-from src.core.urls import normalize_url
-from src.db.models import (
-    Account,
-    BankConnection,
-    Organization,
-    SyncJob,
-    SyncStep,
-    Transaction,
-    User,
-)
+from src.core.operations import find_or_create_connection, provide_otp, trigger_sync
+from src.db.models import Account, Organization, SyncJob, SyncStep, Transaction, User
 from src.db.session import get_session
 
 configure_logging()
 app = typer.Typer(help="WayCore bank scraper CLI", add_completion=False)
 console = Console()
 
-# Default org/user created on first run — single-tenant for the demo.
+# Default org/user created on first run — single-tenant for CLI usage.
 _DEFAULT_ORG_ID = "00000000-0000-0000-0000-000000000001"
 _DEFAULT_USER_ID = "00000000-0000-0000-0000-000000000002"
 
 
 async def _ensure_default_tenant() -> None:
-    """Create a default org and user if they don't exist."""
     async with get_session() as db:
         org = await db.get(Organization, _DEFAULT_ORG_ID)
         if not org:
             db.add(Organization(id=_DEFAULT_ORG_ID, name="Default Org", plan="starter"))
-
         user = await db.get(User, _DEFAULT_USER_ID)
         if not user:
             db.add(User(id=_DEFAULT_USER_ID, org_id=_DEFAULT_ORG_ID, email="admin@waycore.local"))
-
-
-def _bank_slug_from_url(url: str) -> str:
-    """Derive a stable slug from a bank URL for adapter lookup."""
-    host = urlparse(url).netloc.lower()
-    if "heritage" in host or "demo-bank" in host:
-        return "heritage_bank"
-    slug = host.replace("www.", "").replace(".", "_").replace("-", "_")
-    return slug[:64]
 
 
 @app.command()
@@ -74,7 +49,7 @@ def sync(
     ] = None,
     otp_mode: Annotated[str, typer.Option("--otp-mode")] = "static",
 ) -> None:
-    """Trigger a bank sync and stream live step trace to the terminal."""
+    """Trigger a bank sync and stream live step trace."""
     asyncio.run(_sync(bank_url, username, password, otp, otp_mode))
 
 
@@ -83,78 +58,13 @@ async def _sync(
 ) -> None:
     await _ensure_default_tenant()
 
-    bank_slug = _bank_slug_from_url(bank_url)
-    normalized_url = normalize_url(bank_url)
-    job_id = str(uuid.uuid4())
-
-    # Reuse existing connection for the same user+bank+normalized URL.
-    # Normalization prevents duplicates from trailing slash, www, case differences.
-    async with get_session() as db:
-        result = await db.execute(
-            select(BankConnection).where(
-                BankConnection.user_id == _DEFAULT_USER_ID,
-                BankConnection.bank_slug == bank_slug,
-                BankConnection.login_url_normalized == normalized_url,
-            )
-        )
-        existing_conn = result.scalars().first()
-
-        if existing_conn:
-            connection_id = existing_conn.id
-            # Update credentials and original URL in case they changed
-            existing_conn.username_enc = encrypt(username)
-            existing_conn.password_enc = encrypt(password)
-            existing_conn.login_url = bank_url
-            existing_conn.otp_mode = otp_mode
-            existing_conn.otp_value_enc = encrypt(otp) if otp else None
-        else:
-            connection_id = str(uuid.uuid4())
-            db.add(
-                BankConnection(
-                    id=connection_id,
-                    user_id=_DEFAULT_USER_ID,
-                    bank_slug=bank_slug,
-                    bank_name=bank_slug.replace("_", " ").title(),
-                    login_url=bank_url,
-                    login_url_normalized=normalized_url,
-                    username_enc=encrypt(username),
-                    password_enc=encrypt(password),
-                    otp_mode=otp_mode,
-                    otp_value_enc=encrypt(otp) if otp else None,
-                )
-            )
-
-        db.add(
-            SyncJob(
-                id=job_id,
-                restate_id=job_id,
-                connection_id=connection_id,
-                status="pending",
-                started_at=datetime.now(UTC),
-            )
-        )
+    connection_id, bank_slug = await find_or_create_connection(
+        _DEFAULT_USER_ID, bank_url, username, password, otp_mode, otp
+    )
+    job_id = await trigger_sync(connection_id, otp_mode)
 
     console.print(f"[bold green]✓[/] Job created: [cyan]{job_id}[/]")
     console.print(f"  Bank: [cyan]{bank_slug}[/]  URL: {bank_url}\n")
-
-    # Trigger the Restate workflow.
-    # Credentials are NOT included — step_login fetches them from DB.
-    payload: dict[str, Any] = {
-        "job_id": job_id,
-        "connection_id": connection_id,
-        "otp_mode": otp_mode,
-    }
-    # Use /send to trigger asynchronously — returns immediately.
-    # The CLI polls the DB for step progress instead of waiting for completion.
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.post(
-            f"{settings.restate_ingress_url}/SyncBankWorkflow/{job_id}/run/send",
-            json=payload,
-        )
-        if resp.status_code not in (200, 202):
-            console.print(f"[red]Failed to trigger workflow: {resp.status_code} {resp.text}[/]")
-            raise typer.Exit(1)
-
     console.print("[bold]Live step trace[/] (polling every 2s):\n")
     await _poll_job(job_id)
 
@@ -197,7 +107,6 @@ async def _poll_job(job_id: str) -> None:
                 f"Accounts: {job.accounts_synced}  Transactions: {job.transactions_synced}"
             )
             return
-
         if job.status == "partial_success":
             console.print(
                 f"\n[bold yellow]⚠ Sync partially complete.[/] "
@@ -205,11 +114,9 @@ async def _poll_job(job_id: str) -> None:
                 f"Some accounts had errors — check sync steps for details."
             )
             return
-
         if job.status == "failed":
             console.print(f"\n[bold red]✗ Sync failed:[/] {job.failure_reason}")
             raise typer.Exit(1)
-
         if job.status == "awaiting_otp":
             console.print(
                 "\n[yellow]⏸ Waiting for OTP...[/] Run: waycore otp --job-id <id> --code <code>"
@@ -228,17 +135,8 @@ def otp(
 
 
 async def _provide_otp(job_id: str, code: str) -> None:
-    async with httpx.AsyncClient(timeout=10) as client:
-        resp = await client.post(
-            f"{settings.restate_ingress_url}/SyncBankWorkflow/{job_id}/provide_otp",
-            json=code,
-            headers={"Content-Type": "application/json"},
-        )
-        if resp.status_code in (200, 202):
-            console.print(f"[green]✓ OTP sent for job {job_id}[/]")
-        else:
-            console.print(f"[red]Failed: {resp.status_code} {resp.text}[/]")
-            raise typer.Exit(1)
+    await provide_otp(job_id, code)
+    console.print(f"[green]✓ OTP sent for job {job_id}[/]")
 
 
 @app.command()

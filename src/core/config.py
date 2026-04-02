@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     llm_provider: str = "anthropic"  # "anthropic" or "openai"
     llm_model: str | None = None  # override model name (e.g. "gpt-4o", "claude-sonnet-4-6")
     encryption_key: str  # Fernet key — generate with: Fernet.generate_key().decode()
+    encryption_key_previous: str = ""  # old key — set during rotation, remove after re-encrypt
     restate_ingress_url: str = "http://localhost:8080"
     worker_port: int = 9000
     playwright_headful: bool = False
