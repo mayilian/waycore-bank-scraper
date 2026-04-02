@@ -10,3 +10,4 @@ dist/
 data/
 *.egg-info/
 restate-data/
+deploy/cdk/cdk.out/

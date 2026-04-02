@@ -147,32 +147,55 @@ Heritage adapter runs Tier 1 in the happy path. LLM is never instantiated unless
 
 ---
 
-## Deploy to AWS (ECS Fargate)
+## Deploy to AWS (CDK)
 
-Production runs on two ECS Fargate services: API + Workers.
+**Prerequisites:** [AWS CLI](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html), [Node.js](https://nodejs.org/) (for CDK CLI), Python 3.12+
+
+```bash
+# Install CDK CLI (once)
+npm install -g aws-cdk
+
+# Configure AWS credentials
+aws configure --profile personal
+
+# Deploy everything (VPC, RDS, ECS, ALB — one command)
+cd deploy/cdk
+pip install -r requirements.txt
+cdk bootstrap aws://YOUR_ACCOUNT_ID/us-east-1
+cdk deploy --profile personal
+```
+
+This creates:
 
 | Component | Service | Size |
 |---|---|---|
-| API | `waycore-api` | 0.25 vCPU / 512 MB |
-| Worker | `waycore-worker` | 1 vCPU / 2 GB |
-| Database | RDS PostgreSQL 16 | db.t4g.micro+ |
-| Screenshots | S3 | — |
-| Workflow | Restate (self-hosted or Cloud) | — |
+| API | ECS Fargate (ARM64) | 0.25 vCPU / 512 MB |
+| Worker | ECS Fargate Spot (ARM64) | 1 vCPU / 2 GB |
+| Restate | ECS Fargate (ARM64) | 0.5 vCPU / 1 GB |
+| Database | RDS PostgreSQL 16 | db.t4g.micro |
+| Screenshots | S3 (30-day lifecycle) | — |
+
+After deploy, fill in secrets and push Docker images:
+```bash
+# Update secrets (printed in stack outputs)
+aws secretsmanager put-secret-value --secret-id waycore/secrets \
+  --secret-string '{"ENCRYPTION_KEY":"your-fernet-key","ANTHROPIC_API_KEY":"sk-ant-..."}'
+
+# Build and push to ECR (repo URIs in stack outputs)
+docker buildx build --platform linux/arm64 -t $API_REPO_URI:latest --push .
+docker buildx build --platform linux/arm64 -t $WORKER_REPO_URI:latest --push .
+```
+
+### Teardown
+
+Removes **everything** — no lingering resources, no surprise bills:
 
 ```bash
-# Build and push (multi-arch: amd64 + arm64 Graviton)
-docker buildx build --platform linux/amd64,linux/arm64 -t waycore .
-
-# ECS task definitions are in deploy/
-deploy/ecs-task-definition.json       # worker (1 vCPU, 2GB, ARM64, Spot)
-deploy/ecs-task-definition-api.json   # api (0.25 vCPU, 512MB, ARM64)
-deploy/ecs-service-spot.json          # worker service with Spot capacity
-deploy/ecs-scaling-policy.json        # autoscale on pending jobs (future)
-
-# Run migrations
-aws ecs run-task --task-definition waycore-worker \
-  --overrides '{"containerOverrides":[{"name":"waycore-worker","command":["uv","run","alembic","upgrade","head"]}]}'
+cd deploy/cdk
+cdk destroy --profile personal
 ```
+
+RDS, S3, ECR all have `DESTROY` removal policies — `cdk destroy` deletes them completely. For production, change these to `RETAIN`/`SNAPSHOT` in `waycore_stack.py`.
 
 **Cost at scale:** ~$0.001/sync compute. 10K connections = ~$370/mo total. See [docs/ecs-cost-analysis.md](docs/ecs-cost-analysis.md).
 

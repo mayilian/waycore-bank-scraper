@@ -107,7 +107,7 @@ class WayCoreStack(Stack):
             multi_az=False,  # Single-AZ for cost. Flip for prod.
             backup_retention=Duration.days(7),
             deletion_protection=False,  # Set True for prod.
-            removal_policy=RemovalPolicy.SNAPSHOT,
+            removal_policy=RemovalPolicy.DESTROY,  # Clean teardown. Use SNAPSHOT for prod.
         )
 
         # ---------------------------------------------------------------
@@ -117,7 +117,8 @@ class WayCoreStack(Stack):
             self,
             "ScreenshotsBucket",
             bucket_name=f"waycore-screenshots-{self.account}",
-            removal_policy=RemovalPolicy.RETAIN,
+            removal_policy=RemovalPolicy.DESTROY,  # Clean teardown. Use RETAIN for prod.
+            auto_delete_objects=True,  # Empty bucket on destroy.
             encryption=s3.BucketEncryption.S3_MANAGED,
             block_public_access=s3.BlockPublicAccess.BLOCK_ALL,
             lifecycle_rules=[
@@ -132,14 +133,16 @@ class WayCoreStack(Stack):
             self,
             "ApiRepo",
             repository_name="waycore-api",
-            removal_policy=RemovalPolicy.RETAIN,
+            removal_policy=RemovalPolicy.DESTROY,
+            empty_on_delete=True,
             lifecycle_rules=[ecr.LifecycleRule(max_image_count=10)],
         )
         worker_repo = ecr.Repository(
             self,
             "WorkerRepo",
             repository_name="waycore-worker",
-            removal_policy=RemovalPolicy.RETAIN,
+            removal_policy=RemovalPolicy.DESTROY,
+            empty_on_delete=True,
             lifecycle_rules=[ecr.LifecycleRule(max_image_count=10)],
         )
 
@@ -236,12 +239,12 @@ class WayCoreStack(Stack):
         # Shared ECS environment + secrets for API and Worker.
         # ---------------------------------------------------------------
         shared_env = {
-            "USE_RDS_PROXY": "true",
+            "USE_RDS_PROXY": "false",  # No RDS Proxy provisioned. App uses its own pool.
             "RESTATE_INGRESS_URL": restate_ingress_url,
         }
 
         # Pass RDS connection info as individual secret fields.
-        # The app's session.py builds the URL from these when USE_RDS_PROXY=true.
+        # config.py builds DATABASE_URL from DB_HOST/DB_PASSWORD when DB_HOST is set.
         shared_secrets = {
             "DB_HOST": ecs.Secret.from_secrets_manager(db.secret, "host"),
             "DB_PORT": ecs.Secret.from_secrets_manager(db.secret, "port"),
@@ -379,10 +382,15 @@ class WayCoreStack(Stack):
             security_groups=[ecs_sg],
             vpc_subnets=ec2.SubnetSelection(subnet_type=ec2.SubnetType.PRIVATE_WITH_EGRESS),
             capacity_provider_strategies=[
-                # Spot for cost savings. Worker is stateless — Restate retries on eviction.
+                # On-demand base ensures at least 1 worker survives Spot interruptions.
+                ecs.CapacityProviderStrategy(
+                    capacity_provider="FARGATE",
+                    base=1,
+                    weight=1,
+                ),
                 ecs.CapacityProviderStrategy(
                     capacity_provider="FARGATE_SPOT",
-                    weight=1,
+                    weight=4,
                 ),
             ],
             cloud_map_options=ecs.CloudMapOptions(
@@ -403,7 +411,7 @@ class WayCoreStack(Stack):
         cdk.CfnOutput(self, "SecretsArn", value=secrets.secret_arn)
         cdk.CfnOutput(self, "ApiRepoUri", value=api_repo.repository_uri)
         cdk.CfnOutput(self, "WorkerRepoUri", value=worker_repo.repository_uri)
-        cdk.CfnOutput(self, "ScreenshotsBucket", value=screenshots_bucket.bucket_name)
+        cdk.CfnOutput(self, "ScreenshotsBucketName", value=screenshots_bucket.bucket_name)
         cdk.CfnOutput(
             self,
             "RegisterWorkerCmd",

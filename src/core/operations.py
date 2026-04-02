@@ -97,13 +97,23 @@ async def trigger_sync(connection_id: str, otp_mode: str = "static") -> str:
         "connection_id": connection_id,
         "otp_mode": otp_mode,
     }
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.post(
-            f"{settings.restate_ingress_url}/SyncBankWorkflow/{job_id}/run/send",
-            json=payload,
-        )
-        if resp.status_code not in (200, 202):
-            raise RuntimeError(f"Failed to trigger workflow: {resp.status_code} {resp.text}")
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(
+                f"{settings.restate_ingress_url}/SyncBankWorkflow/{job_id}/run/send",
+                json=payload,
+            )
+            if resp.status_code not in (200, 202):
+                raise RuntimeError(f"Restate returned {resp.status_code}: {resp.text}")
+    except Exception:
+        # Mark job as failed so it doesn't sit as orphaned "pending" forever.
+        async with get_session() as db:
+            job = await db.get(SyncJob, job_id)
+            if job:
+                job.status = "failed"
+                job.failure_reason = "Failed to trigger workflow"
+                job.completed_at = datetime.now(UTC)
+        raise
 
     return job_id
 

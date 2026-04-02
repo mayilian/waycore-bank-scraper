@@ -217,10 +217,10 @@ At 50+ tasks, use **RDS Proxy** ($0.015/vCPU-hr) to pool connections and avoid e
 | Bottleneck | Before | After | Implementation |
 |---|---|---|---|
 | Browser memory | ~900MB peak, OOM risk on 2GB | ~600MB peak, stable headroom | Chromium flags: `--disable-gpu`, `--no-zygote`, `--js-flags=--max-old-space-size=256`, `--disable-extensions` in `stealth.py` |
-| DB connections at scale | 50 tasks × 15 pool = 750 connections → exhausts RDS | NullPool when behind proxy | `USE_RDS_PROXY=true` → `NullPool` in `session.py`, proxy handles pooling |
+| DB connections at scale | 50 tasks × 15 pool = 750 connections → exhausts RDS | NullPool when behind proxy | `USE_RDS_PROXY=true` → `NullPool` in `session.py`, proxy handles pooling. **Note:** The app-side config exists, but the CDK stack does not provision RDS Proxy by default (`USE_RDS_PROXY=false`). These numbers describe the target architecture for when RDS Proxy is added. |
 | Bank rate limiting | No limit — 50 syncs hit one bank simultaneously | 3 concurrent per bank_slug | `acquire_bank_slot()` semaphore in `concurrency.py`, wired into workflow |
 | DB round trips | ~8 sessions per sync (1 per account per table) | 1 batch session for all writes | Batch insert transactions, balances, sync_results, steps in `steps.py` |
-| Compute cost | $0.04048/vCPU-hr (amd64, on-demand) | $0.01619/vCPU-hr (arm64 Spot) | Multi-arch Dockerfile + Spot capacity provider in `deploy/ecs-service-spot.json` |
+| Compute cost | $0.04048/vCPU-hr (amd64, on-demand) | $0.01619/vCPU-hr (arm64 Spot) | Multi-arch Dockerfile + Spot capacity provider in CDK stack (`deploy/cdk/`) |
 | Fargate task launch | ~30-60s cold start | ~30-60s (unchanged) | Mitigated by Spot base=1 (always warm) + Restate retry on Spot reclaim |
 
 ### Before/After Cost at 10K Connections
@@ -256,9 +256,9 @@ At 50+ tasks, use **RDS Proxy** ($0.015/vCPU-hr) to pool connections and avoid e
 
 1. **Promote banks to Tier 1** — Each bank with deterministic selectors saves $0.07-0.15/sync in LLM costs and ~30s in sync time
 2. **Reduce sync frequency** — 1x/day vs 4x/day is 4x compute savings
-3. **Fargate Spot** — 70% discount on compute, Restate handles replay on reclaim *(implemented: `deploy/ecs-service-spot.json`)*
+3. **Fargate Spot** — 70% discount on compute, Restate handles replay on reclaim *(implemented in CDK stack: `deploy/cdk/`)*
 4. **ARM64 Graviton** — 20% cheaper Fargate pricing *(implemented: multi-arch Dockerfile)*
-5. **RDS Proxy** — Prevents connection exhaustion at scale *(implemented: `USE_RDS_PROXY` config)*
+5. **RDS Proxy** — Prevents connection exhaustion at scale *(app-side config implemented: `USE_RDS_PROXY` in `session.py`; CDK stack does not provision RDS Proxy by default — add it when scaling past ~50 concurrent tasks)*
 6. **Batch DB writes** — 75% fewer DB round trips per sync *(implemented: batched inserts in `steps.py`)*
 7. **Per-bank concurrency** — Prevents IP blocks from parallel logins *(implemented: `concurrency.py`)*
 8. **Right-size RDS** — Start with db.t4g.micro, upgrade when CPU credits deplete
