@@ -124,6 +124,8 @@ Swagger UI: `$API/docs`
 
 Two CDK stacks: **Foundation** (VPC, RDS, ECR, S3, Secrets, Restate) and **App** (API + Worker Fargate services). Full infrastructure defined in `deploy/cdk/waycore_stack.py`.
 
+**Prerequisites:** AWS CLI, Node.js (CDK CLI), Docker with `--platform linux/arm64` support (native on Apple Silicon, emulated on x86), [Session Manager plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html).
+
 | Component | Spec |
 |---|---|
 | **API** | Fargate, ARM64, 0.25 vCPU / 512 MB, behind ALB |
@@ -160,11 +162,17 @@ Secrets (`ENCRYPTION_KEY`, LLM API key) go in AWS Secrets Manager (`waycore/secr
 
 ## Local Setup
 
-**Prerequisites:** Docker, Python 3.12+, [uv](https://docs.astral.sh/uv/getting-started/installation/)
+Supports macOS and Linux. Commands assume a POSIX shell (Windows: use WSL2).
+
+**Host prerequisites:** [Docker](https://docs.docker.com/get-docker/) (with Compose), Python 3.12+, [uv](https://docs.astral.sh/uv/getting-started/installation/)
+
+Docker runs Postgres, Restate, API, and Worker. The CLI, migrations, and Playwright run on the host via `uv run`.
 
 ```bash
 git clone https://github.com/mayilian/waycore-bank-scraper.git
 cd waycore-bank-scraper
+
+# Host dependencies (Python + Playwright browser)
 uv sync --extra all
 uv run playwright install chromium
 ```
@@ -183,7 +191,7 @@ EOF
 Start services and run a sync:
 ```bash
 docker compose up -d                # postgres + restate + worker + api
-uv run alembic upgrade head         # run migrations
+uv run alembic upgrade head         # create database tables (first time only)
 uv run waycore sync \
   --bank-url https://demo-bank-2.vercel.app \
   --username user --password pass --otp 123456
