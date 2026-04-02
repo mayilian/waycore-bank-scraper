@@ -9,7 +9,6 @@ Deploy order:
 """
 
 import aws_cdk as cdk
-
 from stacks import WayCoreApp, WayCoreFoundation
 
 app = cdk.App()
