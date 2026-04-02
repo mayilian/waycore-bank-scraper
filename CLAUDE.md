@@ -58,5 +58,6 @@ src/api/schemas.py         API request/response models (Literal-typed)
 src/api/auth.py            API key auth → TenantContext
 src/core/config.py         pydantic-settings (Literal-typed providers)
 src/core/metrics.py        CloudWatch EMF metric emitter
-deploy/cdk/                Two-stack CDK (Foundation + App)
+deploy/cdk/stacks/         Two-stack CDK (foundation_stack.py + app_stack.py)
+tests/unit_tests/          Mirrors src/ layout (adapters/, api/, core/, db/, worker/)
 ```

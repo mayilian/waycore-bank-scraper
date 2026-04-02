@@ -12,13 +12,13 @@ migrate:  ## Run database migrations
 # ── Quality ──────────────────────────────────────────────────────────────────
 
 test:  ## Run tests
-	uv run pytest tests/ -v
+	uv run pytest tests/unit_tests/ -v
 
 lint:  ## Run linter
-	uv run ruff check src/ cli.py tests/
+	uv run ruff check src/ cli.py tests/ scripts/
 
 format:  ## Auto-format code
-	uv run ruff format src/ cli.py tests/
+	uv run ruff format src/ cli.py tests/ scripts/
 
 check: lint test  ## Run lint + tests
 

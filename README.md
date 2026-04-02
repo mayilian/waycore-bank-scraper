@@ -4,18 +4,20 @@ Durable browser automation that logs into bank portals, completes OTP challenges
 
 **Demo:** 3 accounts, 130 transactions, 3 balance snapshots from [Heritage Trust Bank](https://demo-bank-2.vercel.app) in ~60 seconds.
 
-## Table of Contents
+## Quick Start
 
-- [Architecture](#architecture)
-- [Design Decisions & Tradeoffs](#design-decisions--tradeoffs)
-- [Live Demo (AWS)](#live-demo-aws)
-- [AWS Deployment (CDK)](#aws-deployment-cdk)
-- [Local Setup](#local-setup)
-- [LLM Providers](#llm-providers)
-- [Configuration](#configuration)
-- [Adding a New Bank](#adding-a-new-bank)
-- [Project Structure](#project-structure)
-- [Stress Test Results](#stress-test-results) & [Scalability](#scalability)
+```bash
+git clone https://github.com/mayilian/waycore-bank-scraper.git && cd waycore-bank-scraper
+uv sync --extra all                   # Python deps
+cp .env.example .env                  # edit: add ENCRYPTION_KEY + LLM key
+docker compose up -d                  # postgres + restate + api + worker
+uv run alembic upgrade head           # create tables (first time)
+uv run waycore sync \
+  --bank-url https://demo-bank-2.vercel.app \
+  --username user --password pass --otp 123456
+```
+
+AWS deployment is separate — see [AWS Deployment (CDK)](#aws-deployment-cdk).
 
 ---
 
@@ -30,9 +32,10 @@ API (FastAPI) ──→ Restate (durable workflow) ──→ Worker (Playwright 
   (API key)                                                               (ON CONFLICT DO NOTHING)
 ```
 
-**Two services, one image:**
+**Two app services, one image, plus Restate for orchestration:**
 - **API** (port 8000): Creates connections, triggers syncs, returns data. No browser. 256MB RAM.
 - **Worker** (port 9000): Runs Playwright, drives browsers, extracts data. 2GB RAM.
+- **Restate**: Durable workflow engine. Journals every step, replays on crash.
 
 ### Workflow
 
@@ -73,7 +76,7 @@ Heritage adapter runs Tier 1 in the happy path. LLM is never instantiated unless
 | **Credential security** | MultiFernet encryption at rest. Decrypt only in worker memory. Key rotation via `ENCRYPTION_KEY_PREVIOUS` — no downtime, no re-encryption migration needed. Never logged, never in API responses. | Credentials in plaintext in a database is a compliance and security failure. MultiFernet makes rotation zero-downtime. |
 | **Duplicate data on re-sync** | `ON CONFLICT (account_id, external_id) DO NOTHING` on all transaction inserts. Balances are append-only (never UPDATE). | Re-running a sync is safe. No duplicate transactions, no overwritten balance history. |
 | **Multi-tenant data isolation** | All queries scoped by `user_id` via `src/db/queries.py`. No raw `select(Model)` in API routes. API keys SHA-256 hashed + `hmac.compare_digest` for timing safety. | App-level tenant isolation prevents data leakage. Timing-safe comparison prevents key enumeration. |
-| **Per-bank rate limiting** | `asyncio.Semaphore` per bank slug (`MAX_CONCURRENT_PER_BANK=3`). | Banks rate-limit or block IPs on parallel logins. Without this, 10 concurrent syncs to the same bank would get IP-banned. |
+| **Per-bank rate limiting** | Two-layer `asyncio.Semaphore`: global max browsers (`MAX_CONCURRENT_SYNCS=5`) + per-bank max (`MAX_CONCURRENT_PER_BANK=3`). | Banks rate-limit or block IPs on parallel logins. Without this, 10 concurrent syncs to the same bank would get IP-banned. |
 
 ### Tradeoffs accepted
 
@@ -89,34 +92,64 @@ Heritage adapter runs Tier 1 in the happy path. LLM is never instantiated unless
 
 ---
 
-## Live Demo (AWS)
+## Local Setup
 
-The API is deployed on AWS ECS Fargate. Request an API key from David to try it.
+Supports macOS and Linux. Commands assume a POSIX shell (Windows: use WSL2).
+
+**Prerequisites:** [Docker](https://docs.docker.com/get-docker/) (with Compose), Python 3.12+, [uv](https://docs.astral.sh/uv/getting-started/installation/)
+
+Docker runs Postgres, Restate, API, Worker, and the browser inside the Worker container. Host-side Python is needed for the CLI, migrations, and tests.
 
 ```bash
-API=http://WayCor-Alb16-5ymcXrsxQf5t-1632089673.us-east-1.elb.amazonaws.com
-KEY=<request from David>
-
-# Health check (no auth required)
-curl $API/healthz
-
-# List synced accounts
-curl $API/v1/accounts -H "Authorization: Bearer $KEY"
-
-# List transactions
-curl $API/v1/transactions -H "Authorization: Bearer $KEY"
-
-# List sync jobs
-curl $API/v1/jobs -H "Authorization: Bearer $KEY"
-
-# Trigger a new sync (takes ~60s)
-curl -X POST $API/v1/connections/a2d4560d-e93b-4d73-b6e3-e21bf823cde3/sync \
-  -H "Authorization: Bearer $KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"otp_mode":"static","otp":"123456"}'
+git clone https://github.com/mayilian/waycore-bank-scraper.git
+cd waycore-bank-scraper
+uv sync --extra all
 ```
 
-Swagger UI: `$API/docs`
+Create `.env` (LLM key only needed if Tier 2/3 fallback triggers — see [LLM Providers](#llm-providers)):
+```bash
+ENCRYPTION_KEY=$(uv run python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
+
+cat > .env << EOF
+ENCRYPTION_KEY=$ENCRYPTION_KEY
+LLM_PROVIDER=anthropic
+ANTHROPIC_API_KEY=your-key-here
+EOF
+```
+
+Start services and run a sync:
+```bash
+docker compose up -d                # postgres + restate + worker + api
+uv run alembic upgrade head         # create database tables (first time only)
+uv run waycore sync \
+  --bank-url https://demo-bank-2.vercel.app \
+  --username user --password pass --otp 123456
+```
+
+### Inspect results
+
+The API runs at `http://localhost:8000`. Generate a key, then query:
+
+```bash
+uv run waycore create-api-key --name test
+# ✓ API key created: wc_DP3o_twmKxjj5MD9i4tUaakJEEhbbhOVDCfVnAK5ZbQ
+
+export KEY=wc_DP3o_...  # your key from above
+
+curl http://localhost:8000/v1/accounts      -H "Authorization: Bearer $KEY"
+curl http://localhost:8000/v1/transactions   -H "Authorization: Bearer $KEY"
+curl http://localhost:8000/v1/jobs           -H "Authorization: Bearer $KEY"
+```
+
+API docs at `http://localhost:8000/docs` (Swagger UI).
+
+> **Dev CLI:** `uv run waycore accounts|transactions|jobs` talks directly to Postgres (no auth, dev-only). Useful for debugging but not a product interface.
+
+### Stop
+
+```bash
+docker compose down
+```
 
 ---
 
@@ -140,13 +173,13 @@ cd deploy/cdk && pip install -r requirements.txt
 cdk deploy WayCoreFoundation -c account=ACCOUNT_ID -c region=us-east-1
 
 # 2. Build and push Docker image (same image serves both API and Worker)
-ACCOUNT=YOUR_ACCOUNT_ID REGION=us-east-1
+ACCOUNT=YOUR_ACCOUNT_ID REGION=us-east-1 TAG=$(git rev-parse --short HEAD)
 aws ecr get-login-password --region $REGION | \
   docker login --username AWS --password-stdin $ACCOUNT.dkr.ecr.$REGION.amazonaws.com
-docker build --platform linux/arm64 -t waycore .
+docker build --platform linux/arm64 -t waycore:$TAG .
 for repo in waycore-api waycore-worker; do
-  docker tag waycore $ACCOUNT.dkr.ecr.$REGION.amazonaws.com/$repo:latest
-  docker push $ACCOUNT.dkr.ecr.$REGION.amazonaws.com/$repo:latest
+  docker tag waycore:$TAG $ACCOUNT.dkr.ecr.$REGION.amazonaws.com/$repo:$TAG
+  docker push $ACCOUNT.dkr.ecr.$REGION.amazonaws.com/$repo:$TAG
 done
 
 # 3. Deploy App (API + Worker Fargate services)
@@ -160,92 +193,42 @@ Secrets (`ENCRYPTION_KEY`, LLM API key) go in AWS Secrets Manager (`waycore/secr
 
 ---
 
-## Local Setup
+## Current Limits & Scaling
 
-Supports macOS and Linux. Commands assume a POSIX shell (Windows: use WSL2).
+**Single worker** (current deployment): 5 concurrent browser sessions, 3 per bank.
 
-**Host prerequisites:** [Docker](https://docs.docker.com/get-docker/) (with Compose), Python 3.12+, [uv](https://docs.astral.sh/uv/getting-started/installation/)
+| Sync frequency | Users supported | Monthly cost (Fargate) |
+|---|---|---|
+| 1 sync/day per user | ~4,000 users | ~$50 |
+| 8 syncs/day (business hours) | ~500 users | ~$50 |
+| Burst (all sync within 30 min) | ~160 users | ~$50 |
 
-Docker runs Postgres, Restate, API, and Worker. The CLI, migrations, and Playwright run on the host via `uv run`.
+The API is not the bottleneck — FastAPI handles thousands of req/s. Only the worker is constrained: each sync holds a Chromium browser for ~60s.
 
-```bash
-git clone https://github.com/mayilian/waycore-bank-scraper.git
-cd waycore-bank-scraper
+**Horizontal scaling is a config change, not a code change:**
 
-# Host dependencies (Python + Playwright browser)
-uv sync --extra all
-uv run playwright install chromium
+```
+                                    ┌─ Worker 1 (5 browsers)
+API → Restate (queue + journal) ──→ ├─ Worker 2 (5 browsers)
+                                    └─ Worker N (5 browsers)
 ```
 
-Create `.env` (LLM key only needed if Tier 2/3 fallback triggers — see [LLM Providers](#llm-providers)):
-```bash
-ENCRYPTION_KEY=$(python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
+- Restate distributes workflows across all registered workers automatically
+- Each worker independently enforces its own concurrency limits
+- Throughput scales linearly: N workers ≈ N x 4,000 syncs/day
+- Adding workers requires only a CDK `desired_count` change and an auto-scaling policy
 
-cat > .env << EOF
-ENCRYPTION_KEY=$ENCRYPTION_KEY
-LLM_PROVIDER=anthropic
-ANTHROPIC_API_KEY=your-key-here
-EOF
-```
+Currently hardcoded at `desired_count=1`. Auto-scaling (target: pending jobs per worker) and scale-to-zero are supported by the architecture but not yet configured — they would be the next step when load demands it.
 
-Start services and run a sync:
-```bash
-docker compose up -d                # postgres + restate + worker + api
-uv run alembic upgrade head         # create database tables (first time only)
-uv run waycore sync \
-  --bank-url https://demo-bank-2.vercel.app \
-  --username user --password pass --otp 123456
-```
+**Cost at scale** (Fargate Spot, ARM64):
 
-Expected output:
-```
-✓ Job created: 507abaf8-...
-  Bank: heritage_bank  URL: https://demo-bank-2.vercel.app
+| Workers | Syncs/day | Monthly cost |
+|---|---|---|
+| 1 | ~4,000 | ~$50 |
+| 3 | ~12,000 | ~$130 |
+| 10 | ~40,000 | ~$400 |
 
-Live step trace (polling every 2s):
-
-  ✓ login                                     19.5s
-  ✓ extract_583761204                         39.7s
-  ✓ extract_583769842                         39.7s
-  ✓ extract_739220031                         39.7s
-  ✓ extract_all                               39.7s
-  ✓ finalise                                  0.0s
-
-✓ Sync complete. Accounts: 3  Transactions: 130
-```
-
-### Inspect results (CLI)
-
-```bash
-uv run waycore accounts       # list synced accounts
-uv run waycore transactions   # list transactions
-uv run waycore jobs           # list sync jobs
-```
-
-### Inspect results (API)
-
-The API runs at `http://localhost:8000`. Generate a key, then query:
-
-```bash
-uv run waycore create-api-key --name test
-# ✓ API key created: wc_DP3o_twmKxjj5MD9i4tUaakJEEhbbhOVDCfVnAK5ZbQ
-
-export KEY=wc_DP3o_...  # your key from above
-
-curl http://localhost:8000/v1/accounts      -H "Authorization: Bearer $KEY"
-curl http://localhost:8000/v1/transactions   -H "Authorization: Bearer $KEY"
-curl http://localhost:8000/v1/jobs           -H "Authorization: Bearer $KEY"
-```
-
-The CLI talks directly to Postgres (no auth, hardcoded dev user). The API is what real clients call — it requires a Bearer API key and scopes all data by tenant. Both read/write the same database.
-
-API docs at `http://localhost:8000/docs` (Swagger UI).
-
-### Stop
-
-```bash
-docker compose down
-```
+Fargate Spot (80% of capacity) saves 60-70% vs on-demand. Spot interruptions are safe — Restate replays from the last checkpoint.
 
 ---
 
@@ -259,23 +242,23 @@ docker compose down
 
 ---
 
-## Configuration
-
-All via environment variables:
+## Key Environment Variables
 
 | Variable | Default | Description |
 |---|---|---|
 | `DATABASE_URL` | `postgresql+asyncpg://...localhost...` | Postgres connection |
-| `DB_HOST` / `DB_PASSWORD` / ... | `""` | Individual fields (overrides DATABASE_URL when DB_HOST is set) |
 | `ENCRYPTION_KEY` | (required) | Fernet key for credentials |
 | `ENCRYPTION_KEY_PREVIOUS` | `""` | Old key during rotation |
 | `LLM_PROVIDER` | `anthropic` | `anthropic`, `bedrock`, or `openai` |
-| `ANTHROPIC_API_KEY` | `""` | Required if LLM fallback triggers (anthropic provider) |
-| `AWS_REGION` | `us-east-1` | AWS region for Bedrock |
+| `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | `""` | Required if LLM fallback triggers |
 | `RESTATE_INGRESS_URL` | `http://localhost:8080` | Restate endpoint |
-| `SCREENSHOT_BACKEND` | `local` | `local` or `s3` |
-| `MAX_SYNC_DURATION_SECS` | `600` | Sync timeout |
+| `MAX_CONCURRENT_SYNCS` | `5` | Global browser session limit per worker |
 | `MAX_CONCURRENT_PER_BANK` | `3` | Per-bank concurrency limit |
+| `MAX_SYNC_DURATION_SECS` | `600` | Sync timeout |
+| `LOG_LEVEL` | `INFO` | Logging level |
+| `SCREENSHOT_BACKEND` | `local` | `local` or `s3` |
+
+Full list in `src/core/config.py`.
 
 ---
 
@@ -290,7 +273,7 @@ All via environment variables:
 ## Project Structure
 
 ```
-cli.py                  CLI: sync, otp, jobs, transactions, accounts, create-api-key
+cli.py                  Dev CLI: sync, inspect data, create API keys (not a product surface)
 src/
   api/                  FastAPI app: connections, syncs, accounts, transactions
     auth.py             API key auth → TenantContext (SHA-256 + hmac)
@@ -320,55 +303,16 @@ src/
     workflow.py         Durable workflow: login → extract_all → finalise
     steps.py            Step functions with batched DB writes
     concurrency.py      Global + per-bank concurrency limiter
-deploy/cdk/             Two-stack CDK (Foundation + App)
+deploy/cdk/
+  stacks/
+    foundation_stack.py VPC, RDS, ECR, S3, Secrets, Restate
+    app_stack.py        API + Worker Fargate services
 alembic/                Database migrations
-tests/
-  unit/                 Fast tests — no external dependencies
-  integration/          API + failure mode tests — requires PostgreSQL
+tests/unit_tests/       Mirrors src/ layout
+  adapters/             Adapter + parser tests
+  agent/                Extractor tests
+  api/                  API integration tests (requires PostgreSQL)
+  core/                 Crypto, URL, config tests
+  db/                   Model tests
+  worker/               Failure mode, concurrency, trigger tests
 ```
-
----
-
-## Stress Test Results
-
-Single worker (Docker, MacBook), Heritage Bank demo (3 accounts, ~130 txns per sync):
-
-| Parallel syncs | All succeeded | Wall time | Avg per sync | Throughput |
-|---|---|---|---|---|
-| 1 | 1/1 | 60s | 60s | 0.02/s |
-| 3 | 3/3 | 60s | 58s | 0.05/s |
-| 5 | 5/5 | 115s | 81s | 0.04/s |
-| 10 | 10/10 | 208s | 126s | 0.05/s |
-
-**Key observations:**
-- **Zero failures at 10x concurrency.** The two-layer concurrency limiter (global max 5 browser sessions + per-bank max 3) queues excess syncs cleanly.
-- **3 syncs fit in a single wave** (~60s) because `MAX_CONCURRENT_PER_BANK=3`. 5 syncs take 2 waves (~115s). 10 syncs take 4 waves (~208s).
-- **Worker memory stayed under 300MB** even at peak. Without the limiter, 20 concurrent browsers caused the worker to stall at 289MB+ with no progress.
-
-### Scalability
-
-**Current setup:** `desired_count=1` (hardcoded) — a single worker with 5 concurrent browser sessions, 3 per bank. This handles:
-
-| Sync frequency | Users supported |
-|---|---|
-| 1 sync/day per user | ~4,000 users |
-| 8 syncs/day (hourly during business hours) | ~500 users |
-| Burst (all sync within a 30-min window) | ~160 users |
-
-The API is not the bottleneck (FastAPI handles thousands of req/s). Only the worker is constrained — each sync holds a Chromium browser for ~60s.
-
-**Horizontal scaling is a config change, not a code change.** The architecture already supports it:
-
-```
-                                    ┌─ Worker 1 (5 browsers)
-API → Restate (queue + journal) ──→ ├─ Worker 2 (5 browsers)
-                                    └─ Worker N (5 browsers)
-```
-
-- Add ECS auto-scaling policy (target: pending sync jobs per worker)
-- Restate distributes workflows across all registered workers automatically
-- Each worker independently enforces its own concurrency limits
-- Throughput scales linearly: N workers ≈ N × 4,300 syncs/day
-- Workers can scale to zero when idle — Restate buffers incoming workflows and dispatches when a worker comes back online
-
-This is intentionally hardcoded at 1 for now. The concurrency limiter, Restate distribution, and stateless worker design mean horizontal scaling requires zero code changes — only a CDK `desired_count` and auto-scaling policy update.

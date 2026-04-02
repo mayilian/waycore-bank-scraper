@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from src.api.auth import TenantContext, get_tenant
 from src.api.schemas import (
@@ -38,10 +38,12 @@ async def start_sync(
 
 @router.get("/jobs", response_model=list[JobResponse])
 async def list_jobs(
-    limit: int = 20, tenant: TenantContext = Depends(get_tenant)
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    tenant: TenantContext = Depends(get_tenant),
 ) -> list[JobResponse]:
     async with get_session() as db:
-        job_list = await queries.list_jobs(db, tenant.user_id, limit)
+        job_list = await queries.list_jobs(db, tenant.user_id, limit, offset)
     return [
         JobResponse(
             id=j.id,

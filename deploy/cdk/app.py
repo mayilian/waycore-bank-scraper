@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CDK app — two stacks: Foundation (infra) and App (services).
+"""CDK app entry point.
 
 Deploy order:
     cdk deploy WayCoreFoundation   # VPC, RDS, ECR, S3, Restate
@@ -9,7 +9,8 @@ Deploy order:
 """
 
 import aws_cdk as cdk
-from waycore_stack import WayCoreApp, WayCoreFoundation
+
+from stacks import WayCoreApp, WayCoreFoundation
 
 app = cdk.App()
 

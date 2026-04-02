@@ -11,6 +11,12 @@ login separate for OTP webhook pause/resume.
 
 IMPORTANT: These functions must not call back into the Restate context.
 They are plain async functions — Restate calls them as durable side effects.
+
+Failure evidence contract — every step failure must produce:
+  1. A SyncStep row (status="failed", output={error, traceback})
+  2. A screenshot if a browser page is available
+  3. A log entry with job_id context bound
+The workflow layer (workflow.py) handles job-level status transitions.
 """
 
 import traceback
@@ -178,6 +184,13 @@ async def step_extract_all(
             raise
 
     if not accounts:
+        await _write_step(
+            job_id,
+            "extract_all",
+            "failed",
+            output={"error": "No accounts found after login"},
+            started_at=started_at,
+        )
         raise RuntimeError("No accounts found — expected at least one account after login")
 
     # Persist everything to DB — batched into fewer round trips

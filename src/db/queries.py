@@ -32,12 +32,15 @@ async def get_connection(
     return result.scalars().first()
 
 
-async def list_jobs(db: AsyncSession, user_id: str, limit: int = 20) -> list[SyncJob]:
+async def list_jobs(
+    db: AsyncSession, user_id: str, limit: int = 20, offset: int = 0
+) -> list[SyncJob]:
     result = await db.execute(
         select(SyncJob)
         .join(BankConnection)
         .where(BankConnection.user_id == user_id)
         .order_by(SyncJob.created_at.desc())
+        .offset(offset)
         .limit(limit)
     )
     return list(result.scalars().all())
@@ -74,7 +77,11 @@ async def list_accounts(db: AsyncSession, user_id: str) -> list[Account]:
 
 
 async def list_transactions(
-    db: AsyncSession, user_id: str, account_id: str | None = None, limit: int = 50
+    db: AsyncSession,
+    user_id: str,
+    account_id: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
 ) -> list[Transaction]:
     stmt = (
         select(Transaction)
@@ -82,6 +89,7 @@ async def list_transactions(
         .join(BankConnection)
         .where(BankConnection.user_id == user_id)
         .order_by(Transaction.posted_at.desc())
+        .offset(offset)
         .limit(limit)
     )
     if account_id:

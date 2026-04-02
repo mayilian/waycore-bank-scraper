@@ -10,6 +10,39 @@ Each ctx.run() call is checkpointed in the Restate journal:
     completed step — no duplicate data.
   - OTP for 'webhook' mode: the workflow suspends via ctx.promise()
     (zero resources held) until the CLI sends the signal.
+
+Failure contracts — what happens at each failure point:
+
+  Trigger fails (Restate unreachable):
+    DB: job.status="failed", job.failure_reason set    (operations.py)
+    Step records: none (workflow never started)
+    API: POST /sync returns 500
+
+  Login fails (bad credentials, OTP timeout, browser crash):
+    DB: job.status="failed", step "login" status="failed" with screenshot
+    Step records: login(failed)
+    API: GET /jobs shows failed with failure_reason
+
+  Extract fails (browser crash during extraction):
+    DB: job.status="failed", step "extract_all" status="failed" with screenshot
+    Step records: login(success), extract_all(failed)
+
+  No accounts found after login:
+    DB: job.status="failed", step "extract_all" status="failed"
+    Step records: login(success), extract_all(failed)
+    Note: no screenshot (browser already closed)
+
+  Some accounts fail, some succeed (partial):
+    DB: job.status="partial_success", per-account result rows
+    Step records: login(success), extract_{id}(success|failed), extract_all(partial)
+
+  All accounts fail:
+    DB: job.status="failed"
+    Step records: login(success), extract_{id}(failed) for each, extract_all raised
+
+  Timeout (MAX_SYNC_DURATION_SECS exceeded):
+    DB: job.status="failed", job.failure_reason="Sync exceeded Ns time limit"
+    Step records: whatever completed before timeout
 """
 
 import asyncio

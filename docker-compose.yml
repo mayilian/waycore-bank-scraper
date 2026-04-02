@@ -67,16 +67,21 @@ services:
       timeout: 5s
       retries: 5
 
-  # Registers the worker with Restate after both are healthy
+  # Registers the worker with Restate after both are healthy.
+  # Retries with backoff — Restate may need a moment after health check passes.
   register:
     image: curlimages/curl:latest
     depends_on:
       worker:
         condition: service_healthy
     command: >
-      curl -sf -X POST http://restate:9070/deployments
-      -H "Content-Type: application/json"
-      -d '{"uri": "http://worker:9000"}'
+      sh -c 'for i in 1 2 3 4 5; do
+        curl -sf -X POST http://restate:9070/deployments
+          -H "Content-Type: application/json"
+          -d "{\"uri\": \"http://worker:9000\", \"force\": true}"
+        && exit 0;
+        echo "Retry $$i..."; sleep 2;
+      done; exit 1'
     restart: "no"
 
 volumes:
