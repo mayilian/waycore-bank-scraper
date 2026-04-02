@@ -317,15 +317,86 @@ alembic/            Database migrations (URL normalization, indexes, data dedup)
 
 ---
 
-## Production Deployment
+## Production Deployment (AWS ECS Fargate)
 
-| Component | Local | Production |
+WayCore production runs on ECS Fargate. The architecture maps directly:
+
+| Component | Local | Production (AWS) |
 |---|---|---|
-| Database | Local PostgreSQL | Neon / RDS |
-| Workflow engine | Local Restate | Restate Cloud |
-| Screenshots | Local filesystem | S3 / Cloudflare R2 (`uv sync --extra s3`) |
-| Compute | `hypercorn` | ECS / Kubernetes |
+| Compute | `hypercorn` | ECS Fargate (2GB / 1 vCPU min) |
+| Database | Local PostgreSQL | RDS PostgreSQL 16 |
+| Workflow engine | Local Restate | Restate Cloud or self-hosted on ECS |
+| Screenshots | Local filesystem | S3 (`SCREENSHOT_BACKEND=s3`) |
+| Secrets | `.env` file | AWS Secrets Manager / Parameter Store |
 
-Configuration is via environment variables. Cloud migration requires updating `DATABASE_URL`, `RESTATE_INGRESS_URL`, screenshot backend settings, and `BROWSER_*` settings to match the deployment region. All ports and pool settings are configurable.
+**Minimum task size:** 2GB RAM / 1 vCPU — Playwright + Chromium needs ~512MB-1GB per browser session.
 
-**Demo shortcuts still in code:** Single-tenant org/user IDs in `cli.py` (hardcoded UUIDs for the demo — production would use real auth).
+### ECS Fargate deployment
+
+```bash
+# 1. Build and push Docker image to ECR
+aws ecr create-repository --repository-name waycore-worker
+docker build -t waycore-worker .
+docker tag waycore-worker:latest <account>.dkr.ecr.<region>.amazonaws.com/waycore-worker:latest
+aws ecr get-login-password --region <region> | docker login --username AWS --password-stdin <account>.dkr.ecr.<region>.amazonaws.com
+docker push <account>.dkr.ecr.<region>.amazonaws.com/waycore-worker:latest
+
+# 2. Create RDS Postgres 16 instance (private subnet, security group allows ECS)
+
+# 3. Create ECS task definition
+#    - Image: <account>.dkr.ecr.<region>.amazonaws.com/waycore-worker:latest
+#    - Memory: 2048  CPU: 1024
+#    - Port mapping: 9000
+#    - Health check: curl -sf http://localhost:9000/restate/health
+#    - Environment from Secrets Manager:
+#      DATABASE_URL, ENCRYPTION_KEY, ANTHROPIC_API_KEY,
+#      SCREENSHOT_BACKEND=s3, S3_BUCKET, RESTATE_INGRESS_URL
+
+# 4. Create ECS service (Fargate, desired count = 1+)
+#    - Service discovery for Restate registration
+#    - ALB target group on port 9000
+
+# 5. Run migrations (one-time task)
+aws ecs run-task \
+  --task-definition waycore-worker \
+  --overrides '{"containerOverrides":[{"name":"waycore-worker","command":["uv","run","alembic","upgrade","head"]}]}'
+
+# 6. Register worker with Restate
+curl -X POST https://<restate-ingress>/deployments \
+  -H "Content-Type: application/json" \
+  -d '{"uri": "http://<worker-service-discovery>:9000"}'
+```
+
+### Scaling
+
+Restate distributes workflow invocations across workers. Each sync needs its own Chromium instance (~512MB). Scale ECS desired count linearly with concurrent sync load:
+
+| Concurrent syncs | ECS tasks | Memory per task |
+|---|---|---|
+| 1-2 | 1 | 2GB |
+| 5-10 | 3-5 | 2GB |
+| 10+ | auto-scale | 2GB |
+
+Use ECS Service Auto Scaling with target tracking on CPU/memory utilization.
+
+### Alternative: Fly.io
+
+A `fly.toml` is included for lighter deployments:
+
+```bash
+fly launch --no-deploy
+fly postgres create --name waycore-db && fly postgres attach waycore-db
+fly secrets set ENCRYPTION_KEY=... ANTHROPIC_API_KEY=... SCREENSHOT_BACKEND=s3 ...
+fly deploy
+fly ssh console -C "uv run alembic upgrade head"
+```
+
+Worker auto-suspends when idle and wakes on Restate requests. Needs `performance-2x` machines (2GB RAM).
+
+### SaaS considerations
+
+- **Multi-tenancy:** Schema supports organizations → users → connections, but CLI currently hardcodes a demo org/user. Production needs real auth (API keys or OAuth) and tenant-scoped queries.
+- **Credential encryption:** Fernet-encrypted in DB. For production, swap to AWS KMS-backed envelope encryption by replacing `src/core/crypto.py`.
+- **Screenshot storage:** Must use S3 (`SCREENSHOT_BACKEND=s3`). Local filesystem doesn't survive container restarts on Fargate.
+- **Rate limiting:** Not implemented. Production needs per-tenant sync rate limits to prevent abuse and bank IP blocks.
+- **VPC networking:** Worker and RDS should be in private subnets. Restate ingress needs access to worker (service discovery or ALB). Worker needs outbound internet for bank URLs and LLM API calls (NAT gateway).
