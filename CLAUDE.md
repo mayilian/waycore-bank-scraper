@@ -12,7 +12,7 @@ CLI (typer) → Restate (durable workflow) → Worker (Playwright + Claude visio
 
 ## Three Layers (Always All Three)
 - **Layer 1 — Execution**: Playwright + stealth always runs. Drives the browser. Has no opinion.
-- **Layer 2 — Intelligence**: LLM (multiple focused calls per goal). Observes DOM/screenshot, returns JSON action. Provider: Anthropic API, lazy-initialized in `extractor.py`.
+- **Layer 2 — Intelligence**: LLM (multiple focused calls per goal). Observes DOM/screenshot, returns JSON action. Provider pluggable via `LLM_PROVIDER` config, lazy-initialized in `agent/llm.py`.
 - **Layer 3 — Orchestration**: Adapter sequences goals. `HeritageBankAdapter` passes selector hints. `GenericAdapter` lets LLM discover everything. Both use same execution + intelligence layers.
 
 ## Key Design Rules
@@ -30,7 +30,7 @@ CLI (typer) → Restate (durable workflow) → Worker (Playwright + Claude visio
 - Playwright async + `playwright-stealth` — stealth browser, bezier mouse movement
 - SQLAlchemy 2.x async + Alembic — ORM + migrations
 - PostgreSQL 16 (Docker Compose for local dev)
-- Claude claude-sonnet-4-6 vision — LLM DOM extraction in `GenericAdapter`
+- Pluggable LLM (Anthropic/OpenAI) — DOM extraction fallback in adapters, vision in `GenericAdapter`
 - structlog — JSON logs, always bind job_id
 - typer + rich — CLI with live step trace
 
@@ -56,21 +56,22 @@ To run on a loop during a session: `/loop 20m /review`
 
 ## File Layout
 ```
-cli.py                      CLI entry point (typer): sync, otp, jobs, transactions, accounts
+cli.py                                CLI entry point (typer): sync, otp, jobs, transactions, accounts
 src/
-  adapters/base.py          BankAdapter ABC + Pydantic data models
-  adapters/generic.py       LLM-driven adapter (default for unknown banks)
-  adapters/heritage.py      Demo bank structured adapter (selector hints + LLM fallback)
-  adapters/__init__.py      ADAPTER_REGISTRY + get_adapter()
-  agent/extractor.py        Per-goal LLM extraction functions (Claude vision)
-  core/config.py            pydantic-settings
-  core/crypto.py            Fernet encrypt/decrypt
-  core/logging.py           structlog JSON logging
-  core/screenshots.py       Screenshot storage (local/S3)
-  core/stealth.py           Playwright launch + bezier mouse + human typing
-  db/models.py              All SQLAlchemy models (multi-tenant)
-  db/session.py             Async session factory
-  worker/app.py             Restate ASGI app registration
-  worker/workflow.py        @workflow.main() sync_bank + provide_otp handler
-  worker/steps.py           Individual step functions (login, accounts, txns, balance)
+  adapters/base.py                    BankAdapter ABC + Pydantic data models
+  adapters/generic_bank_adapter.py    LLM-driven adapter (default for unknown banks)
+  adapters/heritage_bank_adapter.py   Demo bank structured adapter (selector hints + LLM fallback)
+  adapters/__init__.py                ADAPTER_REGISTRY + get_adapter()
+  agent/llm.py                        LLMClient protocol + provider implementations (Anthropic, OpenAI)
+  agent/extractor.py                  Per-goal LLM extraction functions (vision fallback)
+  core/config.py                      pydantic-settings
+  core/crypto.py                      Fernet encrypt/decrypt
+  core/logging.py                     structlog JSON logging
+  core/screenshots.py                 Screenshot storage (local/S3)
+  core/stealth.py                     Playwright launch + bezier mouse + human typing
+  db/models.py                        All SQLAlchemy models (multi-tenant)
+  db/session.py                       Async session factory
+  worker/app.py                       Restate ASGI app registration
+  worker/workflow.py                  @workflow.main() sync_bank + provide_otp handler
+  worker/steps.py                     Individual step functions (login, accounts, txns, balance)
 ```

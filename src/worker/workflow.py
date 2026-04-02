@@ -17,6 +17,7 @@ from typing import Any
 
 import restate
 from restate import WorkflowContext, WorkflowSharedContext
+from restate.exceptions import TerminalError
 
 from src.core.logging import get_logger
 from src.db.models import SyncJob
@@ -59,6 +60,28 @@ async def run(ctx: WorkflowContext, req: dict[str, Any]) -> dict[str, Any]:
     # async calls) so Restate's inspect.iscoroutinefunction check works.
     await ctx.run("mark_running", functools.partial(_set_job_status, job_id, "running"))
 
+    try:
+        return await _run_sync(ctx, job_id, connection_id, otp_mode)
+    except Exception as exc:
+        await ctx.run(
+            "mark_failed",
+            functools.partial(_mark_job_failed, job_id, str(exc)),
+        )
+        raise TerminalError(str(exc)) from exc
+
+
+async def _mark_job_failed(job_id: str, reason: str) -> None:
+    async with get_session() as db:
+        job = await db.get(SyncJob, job_id)
+        if job:
+            job.status = "failed"
+            job.failure_reason = reason
+            job.completed_at = datetime.now(UTC)
+
+
+async def _run_sync(
+    ctx: WorkflowContext, job_id: str, connection_id: str, otp_mode: str
+) -> dict[str, Any]:
     # For webhook OTP: suspend before the browser opens (zero resources held).
     # Resolved by: uv run waycore otp --job-id <id> --code <code>
     webhook_otp: str | None = None
@@ -92,38 +115,63 @@ async def run(ctx: WorkflowContext, req: dict[str, Any]) -> dict[str, Any]:
         ),
     )
 
+    if not account_dicts:
+        raise RuntimeError("No accounts found — expected at least one account after login")
+
     # ── Steps 3+: Per-account transactions and balance ─────────────────────────
+    account_errors: list[str] = []
     for acc in account_dicts:
         ext_id = acc["external_id"]
 
-        await ctx.run(
-            f"transactions_{ext_id}",
-            functools.partial(
-                steps.step_get_transactions,
-                connection_id,
-                job_id,
-                session_state,
-                acc,
-                post_login_url,
-            ),
-        )
-        await ctx.run(
-            f"balance_{ext_id}",
-            functools.partial(
-                steps.step_get_balance,
-                connection_id,
-                job_id,
-                session_state,
-                acc,
-                post_login_url,
-            ),
-        )
+        try:
+            await ctx.run(
+                f"transactions_{ext_id}",
+                functools.partial(
+                    steps.step_get_transactions,
+                    connection_id,
+                    job_id,
+                    session_state,
+                    acc,
+                    post_login_url,
+                ),
+            )
+        except Exception as exc:
+            log.error("workflow.account_transactions_failed", account=ext_id, error=str(exc))
+            account_errors.append(f"transactions_{ext_id}: {exc}")
+
+        try:
+            await ctx.run(
+                f"balance_{ext_id}",
+                functools.partial(
+                    steps.step_get_balance,
+                    connection_id,
+                    job_id,
+                    session_state,
+                    acc,
+                    post_login_url,
+                ),
+            )
+        except Exception as exc:
+            log.error("workflow.account_balance_failed", account=ext_id, error=str(exc))
+            account_errors.append(f"balance_{ext_id}: {exc}")
 
     # ── Finalise ───────────────────────────────────────────────────────────────
-    await ctx.run("finalise", functools.partial(steps.step_finalise, job_id))
+    if account_errors and len(account_errors) >= len(account_dicts) * 2:
+        # All accounts failed — treat as full failure
+        raise RuntimeError(f"All account extractions failed: {'; '.join(account_errors)}")
 
-    log.info("workflow.complete", job_id=job_id)
-    return {"status": "success", "accounts_synced": len(account_dicts)}
+    final_status = "partial_success" if account_errors else "success"
+    await ctx.run(
+        "finalise",
+        functools.partial(steps.step_finalise, job_id, final_status),
+    )
+
+    log.info("workflow.complete", job_id=job_id, status=final_status)
+    return {
+        "status": final_status,
+        "accounts_synced": len(account_dicts),
+        "errors": account_errors,
+    }
 
 
 @sync_workflow.handler()

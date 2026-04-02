@@ -43,13 +43,9 @@ async def stealth_browser(
         )
         ctx_kwargs: dict[str, Any] = {
             "viewport": {"width": 1366, "height": 768},
-            "user_agent": (
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/131.0.0.0 Safari/537.36"
-            ),
-            "locale": "en-US",
-            "timezone_id": "America/New_York",
+            "user_agent": settings.browser_user_agent,
+            "locale": settings.browser_locale,
+            "timezone_id": settings.browser_timezone,
         }
         if storage_state:
             ctx_kwargs["storage_state"] = storage_state

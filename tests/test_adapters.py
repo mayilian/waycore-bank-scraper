@@ -3,8 +3,8 @@
 from decimal import Decimal
 
 from src.adapters import get_adapter
-from src.adapters.generic import GenericBankAdapter
-from src.adapters.heritage import HeritageBankAdapter
+from src.adapters.generic_bank_adapter import GenericBankAdapter
+from src.adapters.heritage_bank_adapter import HeritageBankAdapter
 
 
 def test_heritage_adapter_registered() -> None:

@@ -1,8 +1,10 @@
 """LLM-powered DOM extraction via focused per-goal calls.
 
-Each goal is a separate Claude call with a task-specific system prompt.
+Each goal is a separate LLM call with a task-specific system prompt.
 The DOM summary sent to the LLM is trimmed to ~4k tokens — not raw HTML.
-Claude returns structured JSON; we validate with Pydantic.
+The LLM returns structured JSON; we validate with Pydantic.
+
+LLM provider is pluggable via LLM_PROVIDER config (see src/agent/llm.py).
 
 This module is the intelligence layer. The execution layer (Playwright)
 lives in stealth.py and the adapters. This module never touches the browser
@@ -15,26 +17,14 @@ import re
 from enum import StrEnum
 from typing import Any
 
-from anthropic import AsyncAnthropic
 from playwright.async_api import Page
 from pydantic import BaseModel
 
+from src.agent.llm import get_llm_client
 from src.core.logging import get_logger
 
 log = get_logger(__name__)
-_client: AsyncAnthropic | None = None
 
-
-def _get_client() -> AsyncAnthropic:
-    global _client
-    if _client is None:
-        from src.core.config import settings
-
-        _client = AsyncAnthropic(api_key=settings.anthropic_api_key)
-    return _client
-
-
-_MODEL = "claude-sonnet-4-6"
 _MAX_DOM_CHARS = 12_000  # ~4k tokens — allows larger transaction tables
 
 
@@ -82,26 +72,8 @@ async def _screenshot_b64(page: Page) -> str:
 async def _ask(
     system: str, user_text: str, screenshot_b64: str | None, max_tokens: int = 1024
 ) -> str:
-    content: list[Any] = []
-    if screenshot_b64:
-        content.append(
-            {
-                "type": "image",
-                "source": {"type": "base64", "media_type": "image/png", "data": screenshot_b64},
-            }
-        )
-    content.append({"type": "text", "text": user_text})
-
-    client = _get_client()
-    msg = await client.messages.create(
-        model=_MODEL,
-        max_tokens=max_tokens,
-        system=system,
-        messages=[{"role": "user", "content": content}],
-    )
-    if not msg.content or not hasattr(msg.content[0], "text"):
-        raise ValueError("LLM returned empty or non-text response")
-    return msg.content[0].text
+    client = get_llm_client()
+    return await client.ask(system, user_text, screenshot_b64, max_tokens)
 
 
 # ── Per-goal extraction functions ─────────────────────────────────────────────

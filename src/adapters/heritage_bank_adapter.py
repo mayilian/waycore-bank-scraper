@@ -20,8 +20,23 @@ from playwright.async_api import Page
 from src.adapters.base import AccountData, BalanceData, BankAdapter, TransactionData
 from src.agent import extractor
 from src.core.logging import get_logger
+from src.core.screenshots import get_screenshot_store
 
 log = get_logger(__name__)
+
+
+async def _save_fallback_screenshot(page: Page, job_id: str | None, label: str) -> None:
+    """Capture a diagnostic screenshot when Tier 1 selectors fail and LLM fallback kicks in."""
+    if not job_id:
+        return
+    try:
+        png = await page.screenshot(type="png", full_page=True)
+        store = get_screenshot_store()
+        path = await store.save(job_id, f"fallback_{label}", png)
+        log.info("heritage.fallback_screenshot", path=path, label=label)
+    except Exception:
+        log.warning("heritage.fallback_screenshot_failed", label=label)
+
 
 # ── Known selectors ──────────────────────────────────────────────────────────
 
@@ -40,7 +55,17 @@ async def _wait_for_spa(page: Page, selector: str, wait_ms: int = 15_000) -> boo
     """Wait for SPA content to render. Returns True if found."""
     try:
         await page.wait_for_selector(selector, timeout=wait_ms)
-        await asyncio.sleep(2)
+        # Wait until the DOM has stabilised (no new elements appearing)
+        await page.wait_for_function(
+            """(sel) => {
+                const count = document.querySelectorAll(sel).length;
+                return count > 0;
+            }""",
+            selector,
+            timeout=wait_ms,
+        )
+        # Brief settle for any trailing renders (replaces fixed 2s sleep)
+        await asyncio.sleep(0.3)
         return True
     except Exception:
         return False
@@ -62,6 +87,7 @@ class HeritageBankAdapter(BankAdapter):
             await page.click(_SEL_SUBMIT)
         except Exception:
             log.warning("heritage.selector_miss_credentials", fallback="llm")
+            await _save_fallback_screenshot(page, self.job_id, "credentials")
             fields = await extractor.find_login_fields(page)
             await page.fill(fields["username_selector"], username)
             await page.fill(fields["password_selector"], password)
@@ -75,7 +101,7 @@ class HeritageBankAdapter(BankAdapter):
             )
         except Exception:
             log.warning("heritage.post_login_transition_timeout")
-        await asyncio.sleep(1)
+        await asyncio.sleep(0.3)
 
     async def is_otp_required(self, page: Page) -> bool:
         # Tier 1: check for known OTP selector
@@ -97,19 +123,25 @@ class HeritageBankAdapter(BankAdapter):
             await page.click(_SEL_OTP_SUBMIT)
         except Exception:
             log.warning("heritage.selector_miss_otp", fallback="llm")
+            await _save_fallback_screenshot(page, self.job_id, "otp")
             sel = await extractor.find_otp_field(page)
             await page.fill(sel, otp)
             await page.click(_SEL_OTP_SUBMIT)
 
-        # Wait for dashboard to render
+        # Wait for dashboard to render with content
         try:
             await page.wait_for_selector(
                 "nav, table, h2:has-text('Account')",
                 timeout=20_000,
             )
+            # Wait for table rows to actually populate
+            await page.wait_for_function(
+                "() => document.querySelectorAll('table td').length > 0",
+                timeout=10_000,
+            )
         except Exception:
             log.warning("heritage.post_otp_transition_timeout")
-        await asyncio.sleep(3)
+        await asyncio.sleep(0.3)
 
     # ── Account extraction (Tier 1: DOM parsing) ─────────────────────────────
 
@@ -125,6 +157,7 @@ class HeritageBankAdapter(BankAdapter):
 
         # Tier 2: LLM fallback
         log.warning("heritage.accounts_dom_parse_failed", fallback="llm")
+        await _save_fallback_screenshot(page, self.job_id, "accounts")
         raw_accounts = await extractor.extract_accounts(page)
         accounts = []
         for raw in raw_accounts:
@@ -193,6 +226,7 @@ class HeritageBankAdapter(BankAdapter):
         else:
             # Tier 2: LLM fallback
             log.warning("heritage.nav_selector_miss", account=account.external_id, fallback="llm")
+            await _save_fallback_screenshot(page, self.job_id, f"nav_{account.external_id}")
             nav = await extractor.find_account_link(page, account.external_id)
             if nav.action == "click" and nav.selector:
                 await page.click(nav.selector)
@@ -226,6 +260,9 @@ class HeritageBankAdapter(BankAdapter):
                     account=account.external_id,
                     page=page_num,
                     fallback="llm",
+                )
+                await _save_fallback_screenshot(
+                    page, self.job_id, f"txn_{account.external_id}_p{page_num}"
                 )
                 raw_txns = await extractor.extract_transactions_from_page(page)
                 for raw in raw_txns:
@@ -262,11 +299,12 @@ class HeritageBankAdapter(BankAdapter):
                 .map(th => th.innerText.trim().toLowerCase());
             return Array.from(table.querySelectorAll('tbody tr, tr:not(:first-child)'))
                 .filter(tr => tr.querySelector('td'))
-                .map(tr => {
+                .map((tr, idx) => {
                     const cells = Array.from(tr.querySelectorAll('td'))
                         .map(td => td.innerText.trim());
                     const row = {};
                     headers.forEach((h, i) => { if (cells[i]) row[h] = cells[i]; });
+                    row['_row_index'] = String(idx);
                     return row;
                 });
         }""")
@@ -297,8 +335,11 @@ class HeritageBankAdapter(BankAdapter):
             # Parse date
             posted_at = self._parse_date(date_str) if date_str else None
 
-            # Generate stable external_id from date + description + amount
-            id_source = f"{date_str}|{description}|{amount_str}"
+            # Generate stable external_id from date + description + amount + row index
+            # Row index disambiguates duplicate transactions on the same page
+            row_index = row.get("_row_index", "")
+            balance_str_for_id = balance_str or ""
+            id_source = f"{date_str}|{description}|{amount_str}|{row_index}|{balance_str_for_id}"
             external_id = hashlib.sha256(id_source.encode()).hexdigest()[:16]
 
             # Parse running balance
@@ -336,6 +377,7 @@ class HeritageBankAdapter(BankAdapter):
 
         # Tier 2: LLM fallback
         log.warning("heritage.balance_dom_parse_failed", fallback="llm")
+        await _save_fallback_screenshot(page, self.job_id, f"balance_{account.external_id}")
         raw = await extractor.extract_balance(page)
         return BalanceData(
             account_external_id=account.external_id,

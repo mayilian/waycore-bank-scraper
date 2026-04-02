@@ -9,3 +9,4 @@ dist/
 .venv/
 data/
 *.egg-info/
+restate-data/

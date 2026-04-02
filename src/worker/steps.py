@@ -77,12 +77,6 @@ async def _capture_failure(
         screenshot_path=screenshot_path,
         started_at=started_at,
     )
-    async with get_session() as db:
-        job = await db.get(SyncJob, job_id)
-        if job:
-            job.status = "failed"
-            job.failure_reason = str(exc)
-            job.completed_at = datetime.now(UTC)
 
 
 # ── Step: login ────────────────────────────────────────────────────────────────
@@ -112,6 +106,7 @@ async def step_login(connection_id: str, job_id: str, otp: str | None) -> dict[s
         try:
             await page.goto(login_url, wait_until="networkidle", timeout=20_000)
             adapter = get_adapter(bank_slug)
+            adapter.job_id = job_id
 
             await adapter.navigate_to_login(page)
             await adapter.fill_and_submit_credentials(page, username, password)
@@ -161,6 +156,7 @@ async def step_get_accounts(
         try:
             await page.goto(post_login_url, wait_until="networkidle", timeout=20_000)
             adapter = get_adapter(bank_slug)
+            adapter.job_id = job_id
             accounts = await adapter.get_accounts(page)
         except Exception as exc:
             await _capture_failure(page, job_id, "get_accounts", exc, started_at)
@@ -240,6 +236,7 @@ async def step_get_transactions(
         try:
             await page.goto(post_login_url, wait_until="networkidle", timeout=20_000)
             adapter = get_adapter(bank_slug)
+            adapter.job_id = job_id
             await adapter.navigate_to_account(page, account)
             transactions = await adapter.get_transactions(page, account)
         except Exception as exc:
@@ -320,6 +317,7 @@ async def step_get_balance(
         try:
             await page.goto(post_login_url, wait_until="networkidle", timeout=20_000)
             adapter = get_adapter(bank_slug)
+            adapter.job_id = job_id
             await adapter.navigate_to_account(page, account)
             balance = await adapter.get_balance(page, account)
         except Exception as exc:
@@ -351,12 +349,15 @@ async def step_get_balance(
 # ── Step: finalise ─────────────────────────────────────────────────────────────
 
 
-async def step_finalise(job_id: str) -> None:
+async def step_finalise(job_id: str, status: str = "success") -> None:
     started_at = datetime.now(UTC)
     async with get_session() as db:
         job = await db.get(SyncJob, job_id)
         if job:
-            job.status = "success"
+            job.status = status
             job.completed_at = datetime.now(UTC)
+            conn = await db.get(BankConnection, job.connection_id)
+            if conn:
+                conn.last_synced_at = datetime.now(UTC)
     await _write_step(job_id, "finalise", "success", started_at=started_at)
-    log.info("step.finalise.success", job_id=job_id)
+    log.info("step.finalise.success", job_id=job_id, status=status)

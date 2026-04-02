@@ -194,6 +194,14 @@ async def _poll_job(job_id: str) -> None:
             )
             return
 
+        if job.status == "partial_success":
+            console.print(
+                f"\n[bold yellow]⚠ Sync partially complete.[/] "
+                f"Accounts: {job.accounts_synced}  Transactions: {job.transactions_synced}\n"
+                f"Some accounts had errors — check sync steps for details."
+            )
+            return
+
         if job.status == "failed":
             console.print(f"\n[bold red]✗ Sync failed:[/] {job.failure_reason}")
             raise typer.Exit(1)

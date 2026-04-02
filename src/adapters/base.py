@@ -49,6 +49,7 @@ class BankAdapter(ABC):
     """
 
     bank_slug: str  # e.g. "heritage_bank" — must match ADAPTER_REGISTRY key
+    job_id: str | None = None  # set by step functions for fallback screenshot capture
 
     @abstractmethod
     async def navigate_to_login(self, page: Page) -> None:

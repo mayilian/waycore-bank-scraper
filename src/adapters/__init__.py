@@ -8,8 +8,8 @@ Unknown slugs fall back to GenericBankAdapter (LLM-driven).
 """
 
 from src.adapters.base import BankAdapter
-from src.adapters.generic import GenericBankAdapter
-from src.adapters.heritage import HeritageBankAdapter
+from src.adapters.generic_bank_adapter import GenericBankAdapter
+from src.adapters.heritage_bank_adapter import HeritageBankAdapter
 
 ADAPTER_REGISTRY: dict[str, type[BankAdapter]] = {
     "heritage_bank": HeritageBankAdapter,

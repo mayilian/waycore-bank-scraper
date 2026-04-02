@@ -1,7 +1,7 @@
 """Restate ASGI application.
 
-Served by hypercorn:
-  uv run hypercorn "src.worker.app:app" --bind "0.0.0.0:9000"
+Served by hypercorn (port configurable via WORKER_PORT, default 9000):
+  uv run hypercorn "src.worker.app:app" --bind "0.0.0.0:$WORKER_PORT"
 
 After starting, register with the Restate server:
   curl -X POST http://localhost:9070/deployments \\

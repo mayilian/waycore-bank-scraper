@@ -7,11 +7,24 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     database_url: str = "postgresql+asyncpg://waycore:waycore@localhost:5432/waycore"
-    anthropic_api_key: str
+    anthropic_api_key: str = ""
+    openai_api_key: str = ""
+    llm_provider: str = "anthropic"  # "anthropic" or "openai"
+    llm_model: str | None = None  # override model name (e.g. "gpt-4o", "claude-sonnet-4-6")
     encryption_key: str  # Fernet key — generate with: Fernet.generate_key().decode()
     restate_ingress_url: str = "http://localhost:8080"
+    worker_port: int = 9000
     playwright_headful: bool = False
     screenshot_dir: str = "data/screenshots"
+
+    # Browser stealth settings — override for locale/timezone matching
+    browser_user_agent: str = (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/131.0.0.0 Safari/537.36"
+    )
+    browser_locale: str = "en-US"
+    browser_timezone: str = "America/New_York"
 
     # Screenshot backend: "local" or "s3"
     screenshot_backend: str = "local"
