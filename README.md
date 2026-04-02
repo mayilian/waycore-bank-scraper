@@ -14,7 +14,7 @@ Durable browser automation that logs into bank portals, completes OTP challenges
 - [Configuration](#configuration)
 - [Adding a New Bank](#adding-a-new-bank)
 - [Project Structure](#project-structure)
-- [Stress Test Results](#stress-test-results)
+- [Stress Test Results](#stress-test-results) & [Scalability](#scalability)
 
 ---
 
@@ -372,4 +372,31 @@ Single worker (Docker, MacBook), Heritage Bank demo (3 accounts, ~130 txns per s
 - **Zero failures at 10x concurrency.** The two-layer concurrency limiter (global max 5 browser sessions + per-bank max 3) queues excess syncs cleanly.
 - **3 syncs fit in a single wave** (~60s) because `MAX_CONCURRENT_PER_BANK=3`. 5 syncs take 2 waves (~115s). 10 syncs take 4 waves (~208s).
 - **Worker memory stayed under 300MB** even at peak. Without the limiter, 20 concurrent browsers caused the worker to stall at 289MB+ with no progress.
-- **Horizontal scaling is linear.** With N Fargate workers, throughput scales to ~N × 0.05 syncs/s. Restate distributes workflows across registered workers automatically.
+
+### Scalability
+
+**Current setup:** `desired_count=1` (hardcoded) — a single worker with 5 concurrent browser sessions, 3 per bank. This handles:
+
+| Sync frequency | Users supported |
+|---|---|
+| 1 sync/day per user | ~4,000 users |
+| 8 syncs/day (hourly during business hours) | ~500 users |
+| Burst (all sync within a 30-min window) | ~160 users |
+
+The API is not the bottleneck (FastAPI handles thousands of req/s). Only the worker is constrained — each sync holds a Chromium browser for ~60s.
+
+**Horizontal scaling is a config change, not a code change.** The architecture already supports it:
+
+```
+                                    ┌─ Worker 1 (5 browsers)
+API → Restate (queue + journal) ──→ ├─ Worker 2 (5 browsers)
+                                    └─ Worker N (5 browsers)
+```
+
+- Add ECS auto-scaling policy (target: pending sync jobs per worker)
+- Restate distributes workflows across all registered workers automatically
+- Each worker independently enforces its own concurrency limits
+- Throughput scales linearly: N workers ≈ N × 4,300 syncs/day
+- Workers can scale to zero when idle — Restate buffers incoming workflows and dispatches when a worker comes back online
+
+This is intentionally hardcoded at 1 for now. The concurrency limiter, Restate distribution, and stateless worker design mean horizontal scaling requires zero code changes — only a CDK `desired_count` and auto-scaling policy update.
