@@ -14,7 +14,6 @@ from src.adapters.heritage_parsers import (
     parse_transaction_row,
 )
 
-
 # ── Registry tests ────────────────────────────────────────────────────────────
 
 

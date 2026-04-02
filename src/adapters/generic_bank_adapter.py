@@ -8,7 +8,8 @@ import asyncio
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 
-from playwright.async_api import Error as PlaywrightError, Page
+from playwright.async_api import Error as PlaywrightError
+from playwright.async_api import Page
 
 from src.adapters.base import AccountData, BalanceData, BankAdapter, TransactionData
 from src.agent import extractor

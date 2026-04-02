@@ -14,7 +14,8 @@ import asyncio
 from datetime import UTC, datetime
 from decimal import Decimal
 
-from playwright.async_api import Error as PlaywrightError, Page
+from playwright.async_api import Error as PlaywrightError
+from playwright.async_api import Page
 
 from src.adapters.base import AccountData, BalanceData, BankAdapter, BrowserPolicy, TransactionData
 from src.adapters.heritage_parsers import (

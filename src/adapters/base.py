@@ -15,7 +15,6 @@ from typing import Any
 from playwright.async_api import Page
 from pydantic import BaseModel
 
-
 # ── Data models ───────────────────────────────────────────────────────────────
 
 

@@ -19,7 +19,6 @@ from typing import Any
 
 from sqlalchemy import (
     JSON,
-    Boolean,
     DateTime,
     ForeignKey,
     Integer,

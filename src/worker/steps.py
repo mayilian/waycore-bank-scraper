@@ -19,12 +19,11 @@ from datetime import UTC, datetime
 from typing import Any
 
 from playwright.async_api import Page, StorageState
-from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.engine import CursorResult
 
 from src.adapters import get_adapter
-from src.adapters.base import AccountData, AccountResult, BalanceData, TransactionData
+from src.adapters.base import AccountData, BalanceData, TransactionData
 from src.core.crypto import decrypt
 from src.core.logging import get_logger
 from src.core.screenshots import get_screenshot_store
