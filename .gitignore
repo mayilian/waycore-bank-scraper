@@ -12,3 +12,4 @@ data/
 restate-data/
 deploy/cdk/cdk.out/
 deploy/cdk/cdk.context.json
+memory/
