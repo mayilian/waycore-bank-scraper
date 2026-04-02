@@ -7,6 +7,7 @@ and max_tokens. Returns the raw text response.
 
 Supported providers:
   - anthropic (default) — Claude via AsyncAnthropic
+  - bedrock — Claude via Amazon Bedrock (uses AWS credentials, no API key needed)
   - openai — GPT-4o via AsyncOpenAI
 """
 
@@ -41,6 +42,54 @@ class AnthropicClient:
             ) from e
 
         self._client = AsyncAnthropic(api_key=api_key)
+        self._model = model
+
+    async def ask(
+        self,
+        system: str,
+        user_text: str,
+        screenshot_b64: str | None = None,
+        max_tokens: int = 1024,
+    ) -> str:
+        content: list[Any] = []
+        if screenshot_b64:
+            content.append(
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/png",
+                        "data": screenshot_b64,
+                    },
+                }
+            )
+        content.append({"type": "text", "text": user_text})
+
+        msg = await self._client.messages.create(
+            model=self._model,
+            max_tokens=max_tokens,
+            system=system,
+            messages=[{"role": "user", "content": content}],
+        )
+        if not msg.content or not hasattr(msg.content[0], "text"):
+            raise ValueError("LLM returned empty or non-text response")
+        return str(msg.content[0].text)
+
+
+class BedrockClient:
+    """Claude via Amazon Bedrock — uses AWS credentials, no API key needed."""
+
+    def __init__(
+        self, model: str = "us.anthropic.claude-sonnet-4-6-v1", region: str = "us-east-1"
+    ) -> None:
+        try:
+            from anthropic import AsyncAnthropicBedrock
+        except ImportError as e:
+            raise RuntimeError(
+                "Install the anthropic extra: uv pip install 'waycore-bank-scraper[anthropic]'"
+            ) from e
+
+        self._client = AsyncAnthropicBedrock(aws_region=region)
         self._model = model
 
     async def ask(
@@ -133,6 +182,11 @@ def get_llm_client() -> LLMClient:
             _client = AnthropicClient(
                 api_key=settings.anthropic_api_key,
                 model=settings.llm_model or "claude-sonnet-4-6",
+            )
+        elif provider == "bedrock":
+            _client = BedrockClient(
+                model=settings.llm_model or "us.anthropic.claude-sonnet-4-6-v1",
+                region=settings.aws_region,
             )
         elif provider == "openai":
             _client = OpenAIClient(
