@@ -230,12 +230,18 @@ class SyncJob(Base):
 
     connection: Mapped[BankConnection] = relationship("BankConnection", back_populates="sync_jobs")
     steps: Mapped[list["SyncStep"]] = relationship(
-        "SyncStep", back_populates="job", order_by="SyncStep.created_at",
-        cascade="all, delete-orphan", passive_deletes=True,
+        "SyncStep",
+        back_populates="job",
+        order_by="SyncStep.created_at",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
     )
     account_results: Mapped[list["AccountSyncResult"]] = relationship(
-        "AccountSyncResult", back_populates="job", order_by="AccountSyncResult.created_at",
-        cascade="all, delete-orphan", passive_deletes=True,
+        "AccountSyncResult",
+        back_populates="job",
+        order_by="AccountSyncResult.created_at",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
     )
 
 
