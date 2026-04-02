@@ -59,9 +59,8 @@ async def stealth_browser(
         locale = policy.locale if policy else settings.browser_locale
         timezone_id = policy.timezone_id if policy else settings.browser_timezone
         user_agent = (
-            (policy.user_agent if policy and policy.user_agent else None)
-            or settings.browser_user_agent
-        )
+            policy.user_agent if policy and policy.user_agent else None
+        ) or settings.browser_user_agent
 
         ctx_kwargs: dict[str, Any] = {
             "viewport": {"width": vp_width, "height": vp_height},

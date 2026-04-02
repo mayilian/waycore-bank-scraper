@@ -165,9 +165,10 @@ async def step_extract_all(
     adapter = get_adapter(bank_slug)
     adapter.job_id = job_id
 
-    async with stealth_browser(
-        storage_state=session_state, policy=adapter.browser_policy
-    ) as (_browser, page):
+    async with stealth_browser(storage_state=session_state, policy=adapter.browser_policy) as (
+        _browser,
+        page,
+    ):
         try:
             await page.goto(post_login_url, wait_until="networkidle", timeout=20_000)
             accounts, results = await adapter.extract_all(page, post_login_url)

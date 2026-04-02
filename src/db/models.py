@@ -221,9 +221,7 @@ class AccountSyncResult(Base):
     account_id: Mapped[str] = mapped_column(
         UUID(as_uuid=False), ForeignKey("accounts.id"), nullable=False, index=True
     )
-    status: Mapped[str] = mapped_column(
-        String(16), nullable=False
-    )  # success | failed | partial
+    status: Mapped[str] = mapped_column(String(16), nullable=False)  # success | failed | partial
     transactions_found: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     transactions_inserted: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     balance_captured: Mapped[bool] = mapped_column(nullable=False, server_default="false")

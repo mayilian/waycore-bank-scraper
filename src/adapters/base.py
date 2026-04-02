@@ -176,9 +176,7 @@ class BankAdapter(ABC):
             try:
                 transactions, balance = await self.extract_account(page, account)
                 results.append(
-                    AccountResult(
-                        account=account, transactions=transactions, balance=balance
-                    )
+                    AccountResult(account=account, transactions=transactions, balance=balance)
                 )
             except Exception as exc:
                 results.append(

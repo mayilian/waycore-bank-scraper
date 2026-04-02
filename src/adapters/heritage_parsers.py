@@ -57,9 +57,7 @@ def parse_accounts_from_rows(rows: list[dict[str, str]]) -> list[AccountData]:
     return accounts
 
 
-def parse_transaction_row(
-    row: dict[str, str], page_num: int = 0
-) -> TransactionData | None:
+def parse_transaction_row(row: dict[str, str], page_num: int = 0) -> TransactionData | None:
     """Parse a single DOM table row into a TransactionData."""
     try:
         date_str = row.get("date", "")
@@ -80,7 +78,9 @@ def parse_transaction_row(
         # Page number is included to avoid collisions across paginated results
         row_index = row.get("_row_index", "")
         balance_str_for_id = balance_str or ""
-        id_source = f"{date_str}|{description}|{amount_str}|{row_index}|{balance_str_for_id}|{page_num}"
+        id_source = (
+            f"{date_str}|{description}|{amount_str}|{row_index}|{balance_str_for_id}|{page_num}"
+        )
         external_id = hashlib.sha256(id_source.encode()).hexdigest()[:16]
 
         running_balance = parse_money(balance_str) if balance_str else None
@@ -132,9 +132,7 @@ def parse_llm_transaction(raw: dict[str, Any]) -> TransactionData | None:
         return None
 
 
-def parse_balance_text(
-    balance_text: str, account_external_id: str
-) -> BalanceData | None:
+def parse_balance_text(balance_text: str, account_external_id: str) -> BalanceData | None:
     """Parse a balance string extracted from the DOM."""
     current = parse_money(balance_text)
     if current is None:

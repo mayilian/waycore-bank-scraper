@@ -297,7 +297,9 @@ class HeritageBankAdapter(BankAdapter):
         )
         return all_transactions
 
-    async def _parse_transactions_from_dom(self, page: Page, page_num: int = 1) -> list[TransactionData]:
+    async def _parse_transactions_from_dom(
+        self, page: Page, page_num: int = 1
+    ) -> list[TransactionData]:
         """Parse transaction rows directly from the HTML table."""
         rows: list[dict[str, str]] = await page.evaluate("""() => {
             const table = document.querySelector(
