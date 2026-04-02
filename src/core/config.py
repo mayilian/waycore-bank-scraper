@@ -58,6 +58,7 @@ class Settings(BaseSettings):
     max_sync_duration_secs: int = 600  # 10 minutes — hard cap per sync job
     max_pages_per_account: int = 50  # pagination limit per account
     max_llm_calls_per_sync: int = 100  # LLM API call budget per sync job
+    max_concurrent_syncs: int = 5  # max simultaneous browser sessions per worker
     max_concurrent_per_bank: int = 3  # max simultaneous syncs against one bank_slug
 
     screenshot_backend: Literal["local", "s3"] = "local"

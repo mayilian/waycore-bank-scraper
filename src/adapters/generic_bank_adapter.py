@@ -1,6 +1,10 @@
 """Generic bank adapter — LLM-driven, works on any bank URL.
 
-No hardcoded selectors. The LLM discovers everything from the page.
+No hardcoded selectors. Every step — login fields, OTP input, account
+links, transaction tables, balance text — is discovered at runtime by
+sending a focused DOM snapshot (and optionally a screenshot) to the LLM,
+which returns CSS selectors and extraction instructions.
+
 Use this for any bank not in ADAPTER_REGISTRY.
 """
 

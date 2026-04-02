@@ -25,10 +25,10 @@ from src.agent.extractor import reset_llm_budget
 from src.core import metrics
 from src.core.config import settings
 from src.core.logging import bind_job_context, clear_job_context, get_logger
-from src.db.models import SyncJob
+from src.db.models import BankConnection, SyncJob
 from src.db.session import get_session
 from src.worker import steps
-from src.worker.concurrency import acquire_bank_slot
+from src.worker.concurrency import acquire_sync_slot
 
 log = get_logger(__name__)
 
@@ -81,6 +81,15 @@ async def run(ctx: WorkflowContext, req: dict[str, Any]) -> dict[str, Any]:
         raise TerminalError(str(exc)) from exc
 
 
+async def _resolve_bank_slug(connection_id: str) -> str:
+    """Look up bank_slug from the connection — needed before login to acquire the right slot."""
+    async with get_session() as db:
+        conn = await db.get(BankConnection, connection_id)
+        if not conn:
+            raise ValueError(f"BankConnection {connection_id} not found")
+        return conn.bank_slug
+
+
 async def _mark_job_failed(job_id: str, reason: str) -> None:
     async with get_session() as db:
         job = await db.get(SyncJob, job_id)
@@ -110,21 +119,26 @@ async def _run_sync(
             functools.partial(_set_job_status, job_id, "running"),
         )
 
-    # ── Step 1: Login (browser #1) ────────────────────────────────────────────
-    login_result: dict[str, Any] = await ctx.run(
-        "login",
-        functools.partial(steps.step_login, connection_id, job_id, webhook_otp),
+    # Look up bank_slug before acquiring the slot — we need it for per-bank limiting.
+    bank_slug = await ctx.run(
+        "resolve_bank",
+        functools.partial(_resolve_bank_slug, connection_id),
     )
-    session_state: Any = login_result["storage_state"]
-    post_login_url: str = login_result["post_login_url"]
-    bank_slug: str = login_result["bank_slug"]
-
     bind_job_context(job_id, connection_id, bank_slug)
 
-    # ── Step 2: Extract all accounts (browser #2) ─────────────────────────────
-    # Per-bank concurrency limiter prevents hammering one bank with too many
-    # simultaneous browser sessions. Banks rate-limit or block IPs on parallel logins.
-    async with acquire_bank_slot(bank_slug):
+    # ── Browser section (login + extract) ─────────────────────────────────────
+    # Both steps launch browsers, so both must be gated by concurrency limits.
+    # Two layers: global limit (prevent OOM) + per-bank limit (prevent IP bans).
+    async with acquire_sync_slot(bank_slug):
+        # Step 1: Login (browser #1)
+        login_result: dict[str, Any] = await ctx.run(
+            "login",
+            functools.partial(steps.step_login, connection_id, job_id, webhook_otp),
+        )
+        session_state: Any = login_result["storage_state"]
+        post_login_url: str = login_result["post_login_url"]
+
+        # Step 2: Extract all accounts (browser #2)
         extract_result: dict[str, Any] = await ctx.run(
             "extract_all",
             functools.partial(
