@@ -248,9 +248,7 @@ class SyncStep(Base):
         UUID(as_uuid=False), ForeignKey("sync_jobs.id"), nullable=False, index=True
     )
     name: Mapped[str] = mapped_column(String(64), nullable=False)
-    status: Mapped[str] = mapped_column(
-        String(16), nullable=False
-    )  # success|failed|partial
+    status: Mapped[str] = mapped_column(String(16), nullable=False)  # success|failed|partial
     attempt: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
     output: Mapped[dict[str, Any] | None] = mapped_column(JSON)  # result data or {error, traceback}
     screenshot_path: Mapped[str | None] = mapped_column(Text)  # set on failure
