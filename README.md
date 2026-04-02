@@ -6,18 +6,56 @@ Durable browser automation that logs into bank portals, completes OTP challenges
 
 ## Table of Contents
 
+- [Live Demo (AWS)](#live-demo-aws)
 - [Quick Start](#quick-start)
 - [Architecture](#architecture)
 - [Design Decisions & Tradeoffs](#design-decisions--tradeoffs)
-- [Live Demo (AWS)](#live-demo-aws)
+- [API Reference](#api-reference)
+- [Current Limits & Scaling](#current-limits--scaling)
 - [Local Setup](#local-setup)
 - [AWS Deployment (CDK)](#aws-deployment-cdk)
-- [Current Limits & Scaling](#current-limits--scaling)
 - [LLM Providers](#llm-providers)
 - [Key Environment Variables](#key-environment-variables)
-- [API Reference](#api-reference)
 - [Adding a New Bank](#adding-a-new-bank)
 - [Project Structure](#project-structure)
+
+## Live Demo (AWS)
+
+The API is deployed on AWS ECS Fargate. Request an API key from David to try it.
+
+```bash
+API=http://WayCor-Alb16-5ymcXrsxQf5t-1632089673.us-east-1.elb.amazonaws.com
+KEY=<request from David>
+
+# Health check (no auth)
+curl $API/healthz
+
+# List accounts
+curl $API/v1/accounts -H "Authorization: Bearer $KEY"
+
+# Single account detail
+curl $API/v1/accounts/ACCOUNT_ID -H "Authorization: Bearer $KEY"
+
+# Balance history for an account
+curl $API/v1/accounts/ACCOUNT_ID/balances -H "Authorization: Bearer $KEY"
+
+# Transactions (filter by account, paginate)
+curl "$API/v1/transactions?account_id=ACCOUNT_ID&limit=10" -H "Authorization: Bearer $KEY"
+
+# Sync jobs with step-by-step breakdown
+curl $API/v1/jobs -H "Authorization: Bearer $KEY"
+curl $API/v1/jobs/JOB_ID -H "Authorization: Bearer $KEY"
+
+# Trigger a new sync (~60s)
+curl -X POST $API/v1/connections/a2d4560d-e93b-4d73-b6e3-e21bf823cde3/sync \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"otp_mode":"static","otp":"123456"}'
+```
+
+Swagger UI: `$API/docs`
+
+---
 
 ## Quick Start
 
@@ -107,41 +145,81 @@ Heritage adapter runs Tier 1 in the happy path. LLM is never instantiated unless
 
 ---
 
-## Live Demo (AWS)
+## API Reference
 
-The API is deployed on AWS ECS Fargate. Request an API key from David to try it.
+All endpoints require `Authorization: Bearer <api_key>` header. All data is tenant-scoped — each API key only sees its own data.
 
-```bash
-API=http://WayCor-Alb16-5ymcXrsxQf5t-1632089673.us-east-1.elb.amazonaws.com
-KEY=<request from David>
+### Connections
 
-# Health check (no auth)
-curl $API/healthz
+| Method | Endpoint | Description |
+|---|---|---|
+| `POST` | `/v1/connections` | Register bank credentials (encrypted at rest) |
+| `GET` | `/v1/connections` | List all bank connections |
+| `GET` | `/v1/connections/{id}` | Get a single connection |
+| `DELETE` | `/v1/connections/{id}` | Remove connection and all its data (cascades) |
 
-# List accounts
-curl $API/v1/accounts -H "Authorization: Bearer $KEY"
+### Syncs
 
-# Single account detail
-curl $API/v1/accounts/ACCOUNT_ID -H "Authorization: Bearer $KEY"
+| Method | Endpoint | Description |
+|---|---|---|
+| `POST` | `/v1/connections/{id}/sync` | Trigger a sync (returns `job_id`, 202 Accepted) |
+| `GET` | `/v1/jobs` | List sync jobs (`?limit=20&offset=0`) |
+| `GET` | `/v1/jobs/{id}` | Job detail with step-by-step breakdown |
+| `POST` | `/v1/jobs/{id}/otp` | Send OTP code to a paused webhook-mode sync |
 
-# Balance history for an account
-curl $API/v1/accounts/ACCOUNT_ID/balances -H "Authorization: Bearer $KEY"
+### Accounts & Data
 
-# Transactions (filter by account, paginate)
-curl "$API/v1/transactions?account_id=ACCOUNT_ID&limit=10" -H "Authorization: Bearer $KEY"
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/v1/accounts` | List all discovered accounts |
+| `GET` | `/v1/accounts/{id}` | Get a single account |
+| `GET` | `/v1/accounts/{id}/balances` | Balance history (append-only snapshots, `?limit=50&offset=0`) |
+| `GET` | `/v1/transactions` | List transactions (`?account_id=X&limit=50&offset=0`) |
 
-# Sync jobs with step-by-step breakdown
-curl $API/v1/jobs -H "Authorization: Bearer $KEY"
-curl $API/v1/jobs/JOB_ID -H "Authorization: Bearer $KEY"
+### Health
 
-# Trigger a new sync (~60s)
-curl -X POST $API/v1/connections/a2d4560d-e93b-4d73-b6e3-e21bf823cde3/sync \
-  -H "Authorization: Bearer $KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"otp_mode":"static","otp":"123456"}'
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/healthz` | Health check (no auth required) |
+
+---
+
+## Current Limits & Scaling
+
+**Single worker** (current deployment): 5 concurrent browser sessions, 3 per bank.
+
+| Sync frequency | Users supported | Monthly cost (Fargate) |
+|---|---|---|
+| 1 sync/day per user | ~4,000 users | ~$50 |
+| 8 syncs/day (business hours) | ~500 users | ~$50 |
+| Burst (all sync within 30 min) | ~160 users | ~$50 |
+
+The API is not the bottleneck — FastAPI handles thousands of req/s. Only the worker is constrained: each sync holds a Chromium browser for ~60s.
+
+**Horizontal scaling is a config change, not a code change:**
+
+```
+                                    ┌─ Worker 1 (5 browsers)
+API → Restate (queue + journal) ──→ ├─ Worker 2 (5 browsers)
+                                    └─ Worker N (5 browsers)
 ```
 
-Swagger UI: `$API/docs`
+- Restate distributes workflows across all registered workers automatically
+- Each worker independently enforces its own concurrency limits
+- Throughput scales linearly: N workers ≈ N x 4,000 syncs/day
+- Adding workers requires only a CDK `desired_count` change and an auto-scaling policy
+
+Currently hardcoded at `desired_count=1`. Auto-scaling (target: pending jobs per worker) and scale-to-zero are supported by the architecture but not yet configured — they would be the next step when load demands it.
+
+**Cost at scale** (Fargate Spot, ARM64):
+
+| Workers | Syncs/day | Monthly cost |
+|---|---|---|
+| 1 | ~4,000 | ~$50 |
+| 3 | ~12,000 | ~$130 |
+| 10 | ~40,000 | ~$400 |
+
+Fargate Spot (80% of capacity) saves 60-70% vs on-demand. Spot interruptions are safe — Restate replays from the last checkpoint.
 
 ---
 
@@ -273,45 +351,6 @@ Secrets (`ENCRYPTION_KEY`, LLM API key) go in AWS Secrets Manager (`waycore/secr
 
 ---
 
-## Current Limits & Scaling
-
-**Single worker** (current deployment): 5 concurrent browser sessions, 3 per bank.
-
-| Sync frequency | Users supported | Monthly cost (Fargate) |
-|---|---|---|
-| 1 sync/day per user | ~4,000 users | ~$50 |
-| 8 syncs/day (business hours) | ~500 users | ~$50 |
-| Burst (all sync within 30 min) | ~160 users | ~$50 |
-
-The API is not the bottleneck — FastAPI handles thousands of req/s. Only the worker is constrained: each sync holds a Chromium browser for ~60s.
-
-**Horizontal scaling is a config change, not a code change:**
-
-```
-                                    ┌─ Worker 1 (5 browsers)
-API → Restate (queue + journal) ──→ ├─ Worker 2 (5 browsers)
-                                    └─ Worker N (5 browsers)
-```
-
-- Restate distributes workflows across all registered workers automatically
-- Each worker independently enforces its own concurrency limits
-- Throughput scales linearly: N workers ≈ N x 4,000 syncs/day
-- Adding workers requires only a CDK `desired_count` change and an auto-scaling policy
-
-Currently hardcoded at `desired_count=1`. Auto-scaling (target: pending jobs per worker) and scale-to-zero are supported by the architecture but not yet configured — they would be the next step when load demands it.
-
-**Cost at scale** (Fargate Spot, ARM64):
-
-| Workers | Syncs/day | Monthly cost |
-|---|---|---|
-| 1 | ~4,000 | ~$50 |
-| 3 | ~12,000 | ~$130 |
-| 10 | ~40,000 | ~$400 |
-
-Fargate Spot (80% of capacity) saves 60-70% vs on-demand. Spot interruptions are safe — Restate replays from the last checkpoint.
-
----
-
 ## LLM Providers
 
 | Provider | Config | Notes |
@@ -339,45 +378,6 @@ Fargate Spot (80% of capacity) saves 60-70% vs on-demand. Spot interruptions are
 | `SCREENSHOT_BACKEND` | `local` | `local` or `s3` |
 
 Full list in `src/core/config.py`.
-
----
-
-## API Reference
-
-All endpoints require `Authorization: Bearer <api_key>` header. All data is tenant-scoped — each API key only sees its own data.
-
-### Connections
-
-| Method | Endpoint | Description |
-|---|---|---|
-| `POST` | `/v1/connections` | Register bank credentials (encrypted at rest) |
-| `GET` | `/v1/connections` | List all bank connections |
-| `GET` | `/v1/connections/{id}` | Get a single connection |
-| `DELETE` | `/v1/connections/{id}` | Remove connection and all its data (cascades) |
-
-### Syncs
-
-| Method | Endpoint | Description |
-|---|---|---|
-| `POST` | `/v1/connections/{id}/sync` | Trigger a sync (returns `job_id`, 202 Accepted) |
-| `GET` | `/v1/jobs` | List sync jobs (`?limit=20&offset=0`) |
-| `GET` | `/v1/jobs/{id}` | Job detail with step-by-step breakdown |
-| `POST` | `/v1/jobs/{id}/otp` | Send OTP code to a paused webhook-mode sync |
-
-### Accounts & Data
-
-| Method | Endpoint | Description |
-|---|---|---|
-| `GET` | `/v1/accounts` | List all discovered accounts |
-| `GET` | `/v1/accounts/{id}` | Get a single account |
-| `GET` | `/v1/accounts/{id}/balances` | Balance history (append-only snapshots, `?limit=50&offset=0`) |
-| `GET` | `/v1/transactions` | List transactions (`?account_id=X&limit=50&offset=0`) |
-
-### Health
-
-| Method | Endpoint | Description |
-|---|---|---|
-| `GET` | `/healthz` | Health check (no auth required) |
 
 ---
 
