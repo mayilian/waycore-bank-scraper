@@ -60,6 +60,9 @@ python_version = "3.12"
 strict = true
 plugins = ["pydantic.mypy"]
 ignore_missing_imports = true
+# CDK infrastructure code uses untyped aws_cdk stubs — excluded rather than
+# weakening strict mode with inline ignores throughout.
+exclude = ["deploy/"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

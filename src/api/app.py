@@ -11,7 +11,7 @@ from fastapi import FastAPI
 from src.api.routes import accounts, connections, health, syncs, transactions
 from src.core.logging import configure_logging
 
-configure_logging()
+configure_logging("api")
 
 app = FastAPI(
     title="WayCore",

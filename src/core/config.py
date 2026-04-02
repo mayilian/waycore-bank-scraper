@@ -1,5 +1,7 @@
 """Application configuration via environment variables."""
 
+from typing import Literal
+
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -33,7 +35,7 @@ class Settings(BaseSettings):
     use_rds_proxy: bool = False  # set True when behind RDS Proxy — uses NullPool
     anthropic_api_key: str = ""
     openai_api_key: str = ""
-    llm_provider: str = "anthropic"  # "anthropic", "bedrock", or "openai"
+    llm_provider: Literal["anthropic", "bedrock", "openai"] = "anthropic"
     llm_model: str | None = None  # override model name (e.g. "gpt-4o", "claude-sonnet-4-6")
     aws_region: str = "us-east-1"  # AWS region for Bedrock
     encryption_key: str  # Fernet key — generate with: Fernet.generate_key().decode()
@@ -58,8 +60,7 @@ class Settings(BaseSettings):
     max_llm_calls_per_sync: int = 100  # LLM API call budget per sync job
     max_concurrent_per_bank: int = 3  # max simultaneous syncs against one bank_slug
 
-    # Screenshot backend: "local" or "s3"
-    screenshot_backend: str = "local"
+    screenshot_backend: Literal["local", "s3"] = "local"
     s3_endpoint_url: str | None = None
     s3_access_key_id: str | None = None
     s3_secret_access_key: str | None = None

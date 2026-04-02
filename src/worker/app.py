@@ -16,6 +16,6 @@ import restate
 from src.core.logging import configure_logging
 from src.worker.workflow import sync_workflow
 
-configure_logging()
+configure_logging("worker")
 
 app = restate.app(services=[sync_workflow])

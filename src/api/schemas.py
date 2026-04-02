@@ -2,15 +2,20 @@
 
 from datetime import datetime
 from decimal import Decimal
+from typing import Literal
 
 from pydantic import BaseModel
+
+OtpMode = Literal["static", "totp", "webhook"]
+JobStatus = Literal["pending", "running", "awaiting_otp", "success", "failed", "partial_success"]
+StepStatus = Literal["success", "failed", "partial"]
 
 
 class CreateConnectionRequest(BaseModel):
     bank_url: str
     username: str
     password: str
-    otp_mode: str = "static"
+    otp_mode: OtpMode = "static"
     otp: str | None = None
 
 
@@ -19,13 +24,13 @@ class ConnectionResponse(BaseModel):
     bank_slug: str
     bank_name: str | None
     login_url: str
-    otp_mode: str
+    otp_mode: OtpMode
     last_synced_at: datetime | None
     created_at: datetime
 
 
 class TriggerSyncRequest(BaseModel):
-    otp_mode: str = "static"
+    otp_mode: OtpMode = "static"
 
 
 class TriggerSyncResponse(BaseModel):
@@ -38,7 +43,7 @@ class OtpRequest(BaseModel):
 
 class JobResponse(BaseModel):
     id: str
-    status: str
+    status: JobStatus
     accounts_synced: int
     transactions_synced: int
     failure_reason: str | None
@@ -49,7 +54,7 @@ class JobResponse(BaseModel):
 
 class StepResponse(BaseModel):
     name: str
-    status: str
+    status: StepStatus
     started_at: datetime | None
     completed_at: datetime | None
 
