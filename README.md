@@ -6,7 +6,7 @@ Durable browser automation that logs into bank portals, completes OTP challenges
 
 ## Table of Contents
 
-- [Hosted Demo](#hosted-demo)
+- [Live Demo (AWS)](#live-demo-aws)
 - [Quick Start](#quick-start)
 - [Architecture](#architecture)
 - [Design Decisions & Tradeoffs](#design-decisions--tradeoffs)
@@ -19,30 +19,41 @@ Durable browser automation that logs into bank portals, completes OTP challenges
 - [Adding a New Bank](#adding-a-new-bank)
 - [Project Structure](#project-structure)
 
-## Hosted Demo
+## Live Demo (AWS)
 
-A live instance is running on AWS ECS Fargate. The health endpoint is unauthenticated:
-
-```bash
-curl http://WayCor-Alb16-5ymcXrsxQf5t-1632089673.us-east-1.elb.amazonaws.com/healthz
-# {"status":"ok"}
-```
-
-To explore the full API, generate a key after deploying your own instance (see [AWS Deployment](#aws-deployment-cdk)) or run locally with [Quick Start](#quick-start). Example requests with an API key:
+The API is deployed on AWS ECS Fargate. An API key is provided separately.
 
 ```bash
-API=http://localhost:8000   # or the ALB URL for AWS
-KEY=wc_...                  # from: uv run waycore create-api-key --name test
+API=http://WayCor-Alb16-5ymcXrsxQf5t-1632089673.us-east-1.elb.amazonaws.com
+KEY=<your API key>
 
-curl $API/v1/accounts                                    -H "Authorization: Bearer $KEY"
-curl $API/v1/accounts/ACCOUNT_ID                          -H "Authorization: Bearer $KEY"
-curl $API/v1/accounts/ACCOUNT_ID/balances                 -H "Authorization: Bearer $KEY"
+# Health check (no auth)
+curl $API/healthz
+
+# List accounts
+curl $API/v1/accounts -H "Authorization: Bearer $KEY"
+
+# Single account detail
+curl $API/v1/accounts/ACCOUNT_ID -H "Authorization: Bearer $KEY"
+
+# Balance history for an account
+curl $API/v1/accounts/ACCOUNT_ID/balances -H "Authorization: Bearer $KEY"
+
+# Transactions (filter by account, paginate)
 curl "$API/v1/transactions?account_id=ACCOUNT_ID&limit=10" -H "Authorization: Bearer $KEY"
-curl $API/v1/jobs                                         -H "Authorization: Bearer $KEY"
-curl $API/v1/jobs/JOB_ID                                  -H "Authorization: Bearer $KEY"
+
+# Sync jobs with step-by-step breakdown
+curl $API/v1/jobs -H "Authorization: Bearer $KEY"
+curl $API/v1/jobs/JOB_ID -H "Authorization: Bearer $KEY"
+
+# Trigger a new sync (~60s)
+curl -X POST $API/v1/connections/a2d4560d-e93b-4d73-b6e3-e21bf823cde3/sync \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"otp_mode":"static","otp":"123456"}'
 ```
 
-Swagger UI at `$API/docs`. Full endpoint list in [API Reference](#api-reference).
+Swagger UI: `$API/docs`
 
 ---
 
