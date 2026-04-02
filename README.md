@@ -167,6 +167,25 @@ uv run waycore transactions   # list recent transactions
 uv run waycore jobs           # list sync jobs
 ```
 
+### Tests
+
+```bash
+# Unit tests (no dependencies)
+uv run pytest tests/unit_tests/ -v
+
+# Integration tests (requires running Postgres — docker compose up -d first)
+uv run pytest tests/integration/ -v
+
+# All tests
+uv run pytest tests/ -v
+
+# Lint + type check
+uv run ruff check src/ cli.py tests/ scripts/
+uv run mypy src/ cli.py
+```
+
+Integration tests create isolated tenants per test, so they're safe to run against your local database without affecting existing data.
+
 ### Stop
 
 ```bash
