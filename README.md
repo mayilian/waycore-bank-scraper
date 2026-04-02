@@ -99,13 +99,24 @@ Two CDK stacks: **Foundation** (VPC, RDS, ECR, S3, Secrets, Restate) and **App**
 | **Service mesh** | Cloud Map (`*.waycore.local`) for private DNS |
 
 ```bash
-# Deploy (Foundation first, then push images, then App)
+# 1. Deploy Foundation (VPC, RDS, ECR repos, S3, Restate)
 cd deploy/cdk && pip install -r requirements.txt
 cdk deploy WayCoreFoundation -c account=ACCOUNT_ID -c region=us-east-1
-# Push Docker images to ECR (same image for API + Worker)
+
+# 2. Build and push Docker image (same image serves both API and Worker)
+ACCOUNT=YOUR_ACCOUNT_ID REGION=us-east-1
+aws ecr get-login-password --region $REGION | \
+  docker login --username AWS --password-stdin $ACCOUNT.dkr.ecr.$REGION.amazonaws.com
+docker build --platform linux/arm64 -t waycore .
+for repo in waycore-api waycore-worker; do
+  docker tag waycore $ACCOUNT.dkr.ecr.$REGION.amazonaws.com/$repo:latest
+  docker push $ACCOUNT.dkr.ecr.$REGION.amazonaws.com/$repo:latest
+done
+
+# 3. Deploy App (API + Worker Fargate services)
 cdk deploy WayCoreApp -c account=ACCOUNT_ID -c region=us-east-1
 
-# Teardown (App first, then Foundation)
+# Teardown (App first, then Foundation — removes everything)
 cdk destroy WayCoreApp && cdk destroy WayCoreFoundation
 ```
 
