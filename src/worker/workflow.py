@@ -12,6 +12,7 @@ Each ctx.run() call is checkpointed in the Restate journal:
     (zero resources held) until the CLI sends the signal.
 """
 
+import asyncio
 import functools
 from datetime import UTC, datetime
 from typing import Any
@@ -20,6 +21,8 @@ import restate
 from restate import WorkflowContext, WorkflowSharedContext
 from restate.exceptions import TerminalError
 
+from src.agent.extractor import reset_llm_budget
+from src.core.config import settings
 from src.core.logging import get_logger
 from src.db.models import SyncJob
 from src.db.session import get_session
@@ -56,7 +59,18 @@ async def run(ctx: WorkflowContext, req: dict[str, Any]) -> dict[str, Any]:
     await ctx.run("mark_running", functools.partial(_set_job_status, job_id, "running"))
 
     try:
-        return await _run_sync(ctx, job_id, connection_id, otp_mode)
+        return await asyncio.wait_for(
+            _run_sync(ctx, job_id, connection_id, otp_mode),
+            timeout=settings.max_sync_duration_secs,
+        )
+    except TimeoutError as exc:
+        timeout_msg = f"Sync exceeded {settings.max_sync_duration_secs}s time limit"
+        log.error("workflow.timeout", job_id=job_id, limit=settings.max_sync_duration_secs)
+        await ctx.run(
+            "mark_failed",
+            functools.partial(_mark_job_failed, job_id, timeout_msg),
+        )
+        raise TerminalError(timeout_msg) from exc
     except Exception as exc:
         await ctx.run(
             "mark_failed",
@@ -77,6 +91,9 @@ async def _mark_job_failed(job_id: str, reason: str) -> None:
 async def _run_sync(
     ctx: WorkflowContext, job_id: str, connection_id: str, otp_mode: str
 ) -> dict[str, Any]:
+    # Reset LLM call budget for this sync
+    reset_llm_budget()
+
     # For webhook OTP: suspend before the browser opens (zero resources held).
     webhook_otp: str | None = None
     if otp_mode == "webhook":

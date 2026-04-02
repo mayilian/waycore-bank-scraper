@@ -22,6 +22,7 @@ from sqlalchemy import select
 from src.core.config import settings
 from src.core.crypto import encrypt
 from src.core.logging import configure_logging
+from src.core.urls import normalize_url
 from src.db.models import (
     Account,
     BankConnection,
@@ -83,25 +84,27 @@ async def _sync(
     await _ensure_default_tenant()
 
     bank_slug = _bank_slug_from_url(bank_url)
+    normalized_url = normalize_url(bank_url)
     job_id = str(uuid.uuid4())
 
-    # Reuse existing connection for the same user+bank+URL, or create a new one.
-    # This prevents duplicate accounts/transactions on re-runs.
+    # Reuse existing connection for the same user+bank+normalized URL.
+    # Normalization prevents duplicates from trailing slash, www, case differences.
     async with get_session() as db:
         result = await db.execute(
             select(BankConnection).where(
                 BankConnection.user_id == _DEFAULT_USER_ID,
                 BankConnection.bank_slug == bank_slug,
-                BankConnection.login_url == bank_url,
+                BankConnection.login_url_normalized == normalized_url,
             )
         )
         existing_conn = result.scalars().first()
 
         if existing_conn:
             connection_id = existing_conn.id
-            # Update credentials in case they changed
+            # Update credentials and original URL in case they changed
             existing_conn.username_enc = encrypt(username)
             existing_conn.password_enc = encrypt(password)
+            existing_conn.login_url = bank_url
             existing_conn.otp_mode = otp_mode
             existing_conn.otp_value_enc = encrypt(otp) if otp else None
         else:
@@ -113,6 +116,7 @@ async def _sync(
                     bank_slug=bank_slug,
                     bank_name=bank_slug.replace("_", " ").title(),
                     login_url=bank_url,
+                    login_url_normalized=normalized_url,
                     username_enc=encrypt(username),
                     password_enc=encrypt(password),
                     otp_mode=otp_mode,

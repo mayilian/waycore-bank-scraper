@@ -30,6 +30,11 @@ class Settings(BaseSettings):
     browser_locale: str = "en-US"
     browser_timezone: str = "America/New_York"
 
+    # Operational caps — prevent runaway syncs
+    max_sync_duration_secs: int = 600  # 10 minutes — hard cap per sync job
+    max_pages_per_account: int = 50  # pagination limit per account
+    max_llm_calls_per_sync: int = 100  # LLM API call budget per sync job
+
     # Screenshot backend: "local" or "s3"
     screenshot_backend: str = "local"
     s3_endpoint_url: str | None = None

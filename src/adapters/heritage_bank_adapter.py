@@ -250,9 +250,11 @@ class HeritageBankAdapter(BankAdapter):
     # ── Transaction extraction (Tier 1: DOM parsing) ─────────────────────────
 
     async def get_transactions(self, page: Page, account: AccountData) -> list[TransactionData]:
+        from src.core.config import settings
+
         all_transactions: list[TransactionData] = []
         page_num = 0
-        max_pages = 50
+        max_pages = settings.max_pages_per_account
 
         while page_num < max_pages:
             page_num += 1

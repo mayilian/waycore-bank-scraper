@@ -86,7 +86,10 @@ class BankConnection(Base):
     )
     bank_slug: Mapped[str] = mapped_column(String(64), nullable=False)
     bank_name: Mapped[str | None] = mapped_column(Text)
-    login_url: Mapped[str] = mapped_column(Text, nullable=False)
+    login_url: Mapped[str] = mapped_column(Text, nullable=False)  # original URL as entered
+    login_url_normalized: Mapped[str | None] = mapped_column(
+        Text, index=True
+    )  # canonicalized for identity matching
     username_enc: Mapped[str] = mapped_column(Text, nullable=False)  # Fernet-encrypted
     password_enc: Mapped[str] = mapped_column(Text, nullable=False)  # Fernet-encrypted
     otp_mode: Mapped[str] = mapped_column(

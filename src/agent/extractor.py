@@ -144,12 +144,36 @@ async def _screenshot_b64(page: Page) -> str:
     return base64.standard_b64encode(png).decode()
 
 
+# ── LLM call budget ──────────────────────────────────────────────────────────
+# Per-sync call counter. Reset at the start of each sync job via reset_llm_budget().
+
+_llm_call_count: int = 0
+_llm_call_limit: int = 100  # overridden from settings on reset
+
+
+def reset_llm_budget() -> None:
+    """Reset the LLM call counter. Called at sync start."""
+    global _llm_call_count, _llm_call_limit
+    from src.core.config import settings
+
+    _llm_call_count = 0
+    _llm_call_limit = settings.max_llm_calls_per_sync
+
+
 # ── Core inference ────────────────────────────────────────────────────────────
 
 
 async def _ask(
     system: str, user_text: str, screenshot_b64: str | None, max_tokens: int = 1024
 ) -> str:
+    global _llm_call_count
+    _llm_call_count += 1
+    if _llm_call_count > _llm_call_limit:
+        raise RuntimeError(
+            f"LLM call budget exceeded ({_llm_call_limit} calls per sync). "
+            "Increase MAX_LLM_CALLS_PER_SYNC or investigate why so many fallbacks triggered."
+        )
+    log.debug("llm.call", call_number=_llm_call_count, budget=_llm_call_limit)
     client = get_llm_client()
     return await client.ask(system, user_text, screenshot_b64, max_tokens)
 
