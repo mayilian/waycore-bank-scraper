@@ -5,7 +5,6 @@ FROM python:3.12-slim
 
 # System deps for Playwright Chromium on headless Linux
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl \
     # Playwright Chromium deps (subset of `playwright install-deps`)
     libnss3 \
     libnspr4 \
@@ -50,6 +49,6 @@ RUN mkdir -p /app/data/screenshots
 EXPOSE 9000
 
 HEALTHCHECK --interval=10s --timeout=3s --retries=3 \
-    CMD curl -sf http://localhost:9000/restate/health || exit 1
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:9000/restate/health')" 2>/dev/null || exit 1
 
 CMD ["uv", "run", "hypercorn", "src.worker.app:app", "--bind", "0.0.0.0:9000"]

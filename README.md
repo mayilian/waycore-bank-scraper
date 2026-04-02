@@ -90,27 +90,9 @@ docker compose down
 
 ## AWS Setup (CDK)
 
-One CDK stack deploys everything: VPC, RDS, ECS Fargate (API + Worker + Restate), ALB, S3, Secrets Manager.
+Two CDK stacks: **Foundation** (VPC, RDS, ECR, S3, Secrets, Restate) and **App** (API + Worker services). Deploy Foundation first, push Docker images to ECR, then deploy App.
 
-**Prerequisites:** [AWS CLI](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html), [Node.js](https://nodejs.org/) (for CDK CLI), Docker, Python 3.12+
-
-```bash
-# Install CDK CLI (once)
-npm install -g aws-cdk
-
-# Configure AWS credentials
-aws configure
-
-# Bootstrap CDK (once per account/region)
-cd deploy/cdk
-pip install -r requirements.txt
-cdk bootstrap aws://YOUR_ACCOUNT_ID/us-east-1
-
-# Deploy
-cdk deploy
-```
-
-This creates:
+**Prerequisites:** [AWS CLI](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html), [Node.js](https://nodejs.org/) (for CDK CLI), Docker, Python 3.12+, [Session Manager plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html) (for ECS exec)
 
 | Component | Details |
 |---|---|
@@ -121,36 +103,85 @@ This creates:
 | **Screenshots** | S3, 30-day lifecycle |
 | **Service discovery** | Cloud Map (`*.waycore.local`) |
 
-### Post-deploy
-
-Stack outputs print the ALB URL, ECR repo URIs, and secrets ARN.
+### Step-by-step deployment
 
 ```bash
-# 1. Fill in secrets
-aws secretsmanager put-secret-value --secret-id waycore/secrets \
-  --secret-string '{"ENCRYPTION_KEY":"your-fernet-key","ANTHROPIC_API_KEY":"sk-ant-..."}'
+# 0. One-time setup
+npm install -g aws-cdk
+aws configure                          # set your AWS credentials
+cd deploy/cdk
+pip install -r requirements.txt
+cdk bootstrap aws://YOUR_ACCOUNT_ID/us-east-1
 
-# 2. Build and push Docker images to ECR
-aws ecr get-login-password | docker login --username AWS --password-stdin YOUR_ACCOUNT.dkr.ecr.us-east-1.amazonaws.com
-docker build --platform linux/arm64 -t YOUR_ACCOUNT.dkr.ecr.us-east-1.amazonaws.com/waycore-api:latest .
-docker push YOUR_ACCOUNT.dkr.ecr.us-east-1.amazonaws.com/waycore-api:latest
-docker build --platform linux/arm64 -t YOUR_ACCOUNT.dkr.ecr.us-east-1.amazonaws.com/waycore-worker:latest .
-docker push YOUR_ACCOUNT.dkr.ecr.us-east-1.amazonaws.com/waycore-worker:latest
+# 1. Deploy Foundation (creates VPC, RDS, ECR repos, S3, Restate)
+cdk deploy WayCoreFoundation -c account=YOUR_ACCOUNT_ID -c region=us-east-1
 
-# 3. Register worker with Restate (printed in stack outputs)
-curl -X POST http://restate.waycore.local:9070/deployments \
-  -H 'content-type: application/json' \
-  -d '{"uri": "http://worker.waycore.local:9000"}'
+# 2. Fill secrets
+ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+REGION=us-east-1
+FERNET_KEY=$(python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
+aws secretsmanager put-secret-value --secret-id waycore/secrets --region $REGION \
+  --secret-string "{\"ENCRYPTION_KEY\":\"$FERNET_KEY\",\"ANTHROPIC_API_KEY\":\"sk-ant-...your-key...\"}"
 
-# 4. Run migrations
-aws ecs run-task --cluster waycore --task-definition WayCoreStack-WorkerTaskDef... \
+# 3. Build and push Docker images (same image for both services)
+aws ecr get-login-password --region $REGION | \
+  docker login --username AWS --password-stdin $ACCOUNT.dkr.ecr.$REGION.amazonaws.com
+docker build --platform linux/arm64 -t waycore .
+docker tag waycore $ACCOUNT.dkr.ecr.$REGION.amazonaws.com/waycore-api:latest
+docker tag waycore $ACCOUNT.dkr.ecr.$REGION.amazonaws.com/waycore-worker:latest
+docker push $ACCOUNT.dkr.ecr.$REGION.amazonaws.com/waycore-api:latest
+docker push $ACCOUNT.dkr.ecr.$REGION.amazonaws.com/waycore-worker:latest
+
+# 4. Deploy App (creates API + Worker ECS services — images must exist in ECR)
+cdk deploy WayCoreApp -c account=YOUR_ACCOUNT_ID -c region=us-east-1
+
+# 5. Register worker with Restate (via ECS exec — Restate admin port is VPC-only)
+RESTATE_SVC=$(aws ecs list-services --cluster waycore --region $REGION \
+  --query 'serviceArns[?contains(@,`Restate`)]|[0]' --output text | rev | cut -d/ -f1 | rev)
+TASK_ID=$(aws ecs list-tasks --cluster waycore --service-name $RESTATE_SVC --region $REGION \
+  --query 'taskArns[0]' --output text | rev | cut -d/ -f1 | rev)
+aws ecs execute-command --cluster waycore --task $TASK_ID --container restate --interactive \
+  --region $REGION \
+  --command 'curl -XPOST -H "Content-Type: application/json" -d "{\"uri\":\"http://worker.waycore.local:9000\"}" http://localhost:9070/deployments'
+
+# 6. Run database migrations
+WORKER_SVC=$(aws ecs list-services --cluster waycore --region $REGION \
+  --query 'serviceArns[?contains(@,`Worker`)]|[0]' --output text | rev | cut -d/ -f1 | rev)
+WORKER_TASK_DEF=$(aws ecs describe-services --cluster waycore --services $WORKER_SVC \
+  --region $REGION --query 'services[0].taskDefinition' --output text)
+NET_CONFIG=$(aws ecs describe-services --cluster waycore --services $WORKER_SVC \
+  --region $REGION --query 'services[0].networkConfiguration' --output json)
+aws ecs run-task --cluster waycore --task-definition $WORKER_TASK_DEF --launch-type FARGATE \
+  --region $REGION --network-configuration "$NET_CONFIG" \
   --overrides '{"containerOverrides":[{"name":"worker","command":["uv","run","alembic","upgrade","head"]}]}'
+
+# 7. Verify — ALB URL is in the stack outputs
+ALB_URL=$(aws cloudformation describe-stacks --stack-name WayCoreApp --region $REGION \
+  --query 'Stacks[0].Outputs[?OutputKey==`AlbUrl`].OutputValue' --output text)
+curl http://$ALB_URL/healthz
+# → {"status":"ok"}
 ```
 
-For Bedrock (no API key needed):
+For Bedrock (no Anthropic API key needed):
 ```bash
-# Set LLM_PROVIDER=bedrock in the CDK stack environment — uses AWS IAM credentials automatically
+# Set LLM_PROVIDER=bedrock in the CDK worker environment — uses IAM credentials automatically
 ```
+
+### Updating code
+
+After code changes, rebuild and push the image, then restart ECS services:
+
+```bash
+docker build --platform linux/arm64 -t waycore .
+docker tag waycore $ACCOUNT.dkr.ecr.$REGION.amazonaws.com/waycore-api:latest
+docker tag waycore $ACCOUNT.dkr.ecr.$REGION.amazonaws.com/waycore-worker:latest
+docker push $ACCOUNT.dkr.ecr.$REGION.amazonaws.com/waycore-api:latest
+docker push $ACCOUNT.dkr.ecr.$REGION.amazonaws.com/waycore-worker:latest
+aws ecs update-service --cluster waycore --service $API_SVC --force-new-deployment --region $REGION
+aws ecs update-service --cluster waycore --service $WORKER_SVC --force-new-deployment --region $REGION
+```
+
+No CDK redeploy needed for code-only changes.
 
 ### Teardown
 
@@ -158,10 +189,11 @@ Removes **everything** — no lingering resources, no surprise bills:
 
 ```bash
 cd deploy/cdk
-cdk destroy
+cdk destroy WayCoreApp -c account=YOUR_ACCOUNT_ID -c region=us-east-1
+cdk destroy WayCoreFoundation -c account=YOUR_ACCOUNT_ID -c region=us-east-1
 ```
 
-All resources have `DESTROY` removal policies. For production, change to `RETAIN`/`SNAPSHOT` in `waycore_stack.py`.
+Destroy App first (depends on Foundation). All resources have `DESTROY` removal policies. For production, change to `RETAIN`/`SNAPSHOT` in `waycore_stack.py`.
 
 ---
 

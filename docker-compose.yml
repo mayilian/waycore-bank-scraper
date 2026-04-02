@@ -40,7 +40,7 @@ services:
       restate:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:9000/restate/health || exit 1"]
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:9000/restate/health')\" 2>/dev/null || exit 1"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -59,7 +59,7 @@ services:
       postgres:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8000/healthz || exit 1"]
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')\" 2>/dev/null || exit 1"]
       interval: 5s
       timeout: 5s
       retries: 5
