@@ -109,11 +109,11 @@ Heritage adapter runs Tier 1 in the happy path. LLM is never instantiated unless
 
 ## Live Demo (AWS)
 
-The API is deployed on AWS ECS Fargate. Try it with the key below:
+The API is deployed on AWS ECS Fargate. Request an API key from David to try it.
 
 ```bash
 API=http://WayCor-Alb16-5ymcXrsxQf5t-1632089673.us-east-1.elb.amazonaws.com
-KEY=wc_XzwB57iZjJA6TI0LPN6Pn0O4fd-whlFsN8ljzx-TYxU
+KEY=<request from David>
 
 # Health check (no auth)
 curl $API/healthz
