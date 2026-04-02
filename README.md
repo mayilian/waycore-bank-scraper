@@ -20,6 +20,8 @@ Durable browser automation that logs into bank portals, completes OTP challenges
 
 ## Architecture
 
+![Architecture](diagram.png)
+
 ```
 API (FastAPI) ──→ Restate (durable workflow) ──→ Worker (Playwright + LLM) ──→ PostgreSQL
      ↑                                                                              ↑
