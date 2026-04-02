@@ -4,7 +4,7 @@ Launches Chromium with bot-detection evasion:
   - playwright-stealth patches (navigator.webdriver, plugins, Chrome runtime)
   - Bezier curve mouse movement (defeats behavioral mouse tracking)
   - Per-keystroke random delays (defeats typing cadence analysis)
-  - Realistic viewport, locale, timezone
+  - Configurable viewport, locale, timezone via BrowserPolicy
 """
 
 import asyncio
@@ -12,40 +12,62 @@ import math
 import random
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from playwright.async_api import Browser, BrowserContext, Page, StorageState, async_playwright
 from playwright_stealth import Stealth
 
 from src.core.config import settings
 
+if TYPE_CHECKING:
+    from src.adapters.base import BrowserPolicy
+
 
 @asynccontextmanager
 async def stealth_browser(
     storage_state: StorageState | None = None,
+    policy: "BrowserPolicy | None" = None,
 ) -> AsyncGenerator[tuple[Browser, Page], None]:
     """Yield a (browser, page) pair configured for stealth operation.
 
     If storage_state is provided (dict with 'cookies' and 'origins'),
     the browser context is initialized with those cookies — useful for
     restoring a session across Restate workflow steps.
+
+    If policy is provided, viewport/locale/timezone/UA come from it.
+    Otherwise falls back to global settings defaults.
     """
     async with async_playwright() as pw:
+        launch_args = [
+            "--disable-blink-features=AutomationControlled",
+            "--disable-dev-shm-usage",
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--disable-infobars",
+        ]
+        if policy and policy.extra_args:
+            launch_args.extend(policy.extra_args)
+
         browser = await pw.chromium.launch(
             headless=not settings.playwright_headful,
-            args=[
-                "--disable-blink-features=AutomationControlled",
-                "--disable-dev-shm-usage",
-                "--no-first-run",
-                "--no-default-browser-check",
-                "--disable-infobars",
-            ],
+            args=launch_args,
         )
+
+        # Per-bank overrides from BrowserPolicy, falling back to global settings
+        vp_width = policy.viewport_width if policy else 1366
+        vp_height = policy.viewport_height if policy else 768
+        locale = policy.locale if policy else settings.browser_locale
+        timezone_id = policy.timezone_id if policy else settings.browser_timezone
+        user_agent = (
+            (policy.user_agent if policy and policy.user_agent else None)
+            or settings.browser_user_agent
+        )
+
         ctx_kwargs: dict[str, Any] = {
-            "viewport": {"width": 1366, "height": 768},
-            "user_agent": settings.browser_user_agent,
-            "locale": settings.browser_locale,
-            "timezone_id": settings.browser_timezone,
+            "viewport": {"width": vp_width, "height": vp_height},
+            "user_agent": user_agent,
+            "locale": locale,
+            "timezone_id": timezone_id,
         }
         if storage_state:
             ctx_kwargs["storage_state"] = storage_state

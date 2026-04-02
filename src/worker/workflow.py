@@ -1,14 +1,15 @@
 """Restate durable workflow for bank synchronisation.
 
+Step boundaries are aligned with browser session economics:
+  1. login — separate step for OTP webhook pause/resume
+  2. extract_all — single browser session for ALL accounts
+  3. finalise — mark job complete
+
 Each ctx.run() call is checkpointed in the Restate journal:
   - If the worker crashes mid-sync, replay resumes from the last
-    completed step — no re-login, no duplicate data.
+    completed step — no duplicate data.
   - OTP for 'webhook' mode: the workflow suspends via ctx.promise()
     (zero resources held) until the CLI sends the signal.
-
-Browser session state (cookies) is returned from step_login and passed
-into subsequent steps, so each step can restore the authenticated session
-without re-logging in from scratch. See steps.py for the browser lifecycle.
 """
 
 import functools
@@ -32,10 +33,11 @@ sync_workflow = restate.Workflow("SyncBankWorkflow")
 async def _set_job_status(job_id: str, status: str) -> None:
     async with get_session() as db:
         job = await db.get(SyncJob, job_id)
-        if job:
-            job.status = status
-            if status == "running" and not job.started_at:
-                job.started_at = datetime.now(UTC)
+        if not job:
+            raise ValueError(f"SyncJob {job_id} not found — cannot set status to '{status}'")
+        job.status = status
+        if status == "running" and not job.started_at:
+            job.started_at = datetime.now(UTC)
 
 
 @sync_workflow.main()
@@ -44,20 +46,13 @@ async def run(ctx: WorkflowContext, req: dict[str, Any]) -> dict[str, Any]:
     - job_id: str
     - connection_id: str
     - otp_mode: str  ("static" | "totp" | "webhook")
-    - otp: str | None  (provided for static/totp modes)
     """
     job_id: str = req["job_id"]
     connection_id: str = req["connection_id"]
     otp_mode: str = req.get("otp_mode", "static")
-    # NOTE: plaintext credentials are never included in the Restate payload.
-    # Static/TOTP OTPs are retrieved from DB (encrypted) inside step_login.
-    # Webhook OTPs arrive via the provide_otp handler below.
 
     log.info("workflow.start", job_id=job_id, connection_id=connection_id)
 
-    # Mark job as running
-    # NOTE: All ctx.run() actions must be async functions (not lambdas wrapping
-    # async calls) so Restate's inspect.iscoroutinefunction check works.
     await ctx.run("mark_running", functools.partial(_set_job_status, job_id, "running"))
 
     try:
@@ -83,7 +78,6 @@ async def _run_sync(
     ctx: WorkflowContext, job_id: str, connection_id: str, otp_mode: str
 ) -> dict[str, Any]:
     # For webhook OTP: suspend before the browser opens (zero resources held).
-    # Resolved by: uv run waycore otp --job-id <id> --code <code>
     webhook_otp: str | None = None
     if otp_mode == "webhook":
         await ctx.run(
@@ -97,67 +91,34 @@ async def _run_sync(
             functools.partial(_set_job_status, job_id, "running"),
         )
 
-    # ── Step 1: Login ──────────────────────────────────────────────────────────
-    # otp=None for static/totp — step_login fetches from DB.
-    # otp=webhook_otp for webhook mode — arrived via promise.
+    # ── Step 1: Login (browser #1) ────────────────────────────────────────────
     login_result: dict[str, Any] = await ctx.run(
         "login",
         functools.partial(steps.step_login, connection_id, job_id, webhook_otp),
     )
     session_state: Any = login_result["storage_state"]
     post_login_url: str = login_result["post_login_url"]
+    bank_slug: str = login_result["bank_slug"]
 
-    # ── Step 2: Discover accounts ──────────────────────────────────────────────
-    account_dicts: list[dict[str, Any]] = await ctx.run(
-        "get_accounts",
+    # ── Step 2: Extract all accounts (browser #2) ─────────────────────────────
+    # One browser session: discover accounts → extract txns + balance for each.
+    extract_result: dict[str, Any] = await ctx.run(
+        "extract_all",
         functools.partial(
-            steps.step_get_accounts, connection_id, job_id, session_state, post_login_url
+            steps.step_extract_all,
+            connection_id,
+            job_id,
+            session_state,
+            post_login_url,
+            bank_slug,
         ),
     )
 
-    if not account_dicts:
-        raise RuntimeError("No accounts found — expected at least one account after login")
+    account_errors: list[str] = extract_result.get("errors", [])
+    accounts_found: int = extract_result.get("accounts_found", 0)
 
-    # ── Steps 3+: Per-account transactions and balance ─────────────────────────
-    account_errors: list[str] = []
-    for acc in account_dicts:
-        ext_id = acc["external_id"]
-
-        try:
-            await ctx.run(
-                f"transactions_{ext_id}",
-                functools.partial(
-                    steps.step_get_transactions,
-                    connection_id,
-                    job_id,
-                    session_state,
-                    acc,
-                    post_login_url,
-                ),
-            )
-        except Exception as exc:
-            log.error("workflow.account_transactions_failed", account=ext_id, error=str(exc))
-            account_errors.append(f"transactions_{ext_id}: {exc}")
-
-        try:
-            await ctx.run(
-                f"balance_{ext_id}",
-                functools.partial(
-                    steps.step_get_balance,
-                    connection_id,
-                    job_id,
-                    session_state,
-                    acc,
-                    post_login_url,
-                ),
-            )
-        except Exception as exc:
-            log.error("workflow.account_balance_failed", account=ext_id, error=str(exc))
-            account_errors.append(f"balance_{ext_id}: {exc}")
-
-    # ── Finalise ───────────────────────────────────────────────────────────────
-    if account_errors and len(account_errors) >= len(account_dicts) * 2:
-        # All accounts failed — treat as full failure
+    # ── Step 3: Finalise ──────────────────────────────────────────────────────
+    if account_errors and len(account_errors) >= accounts_found:
         raise RuntimeError(f"All account extractions failed: {'; '.join(account_errors)}")
 
     final_status = "partial_success" if account_errors else "success"
@@ -169,15 +130,14 @@ async def _run_sync(
     log.info("workflow.complete", job_id=job_id, status=final_status)
     return {
         "status": final_status,
-        "accounts_synced": len(account_dicts),
+        "accounts_found": accounts_found,
+        "accounts_extracted": extract_result.get("accounts_extracted", 0),
         "errors": account_errors,
     }
 
 
 @sync_workflow.handler()
 async def provide_otp(ctx: WorkflowSharedContext, otp: str) -> None:
-    """Resolve the OTP promise for a paused webhook-mode workflow.
-    Called by: uv run waycore otp --job-id <id> --code <otp>
-    """
+    """Resolve the OTP promise for a paused webhook-mode workflow."""
     await ctx.promise("otp").resolve(otp)  # type: ignore[arg-type]
     log.info("workflow.otp_provided")

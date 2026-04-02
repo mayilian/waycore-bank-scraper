@@ -10,10 +10,23 @@ crash recovery and OTP pause/resume. LLM (Claude vision) handles DOM understandi
 CLI (typer) → Restate (durable workflow) → Worker (Playwright + Claude vision) → PostgreSQL
 ```
 
+## Browser Session Design
+Step boundaries are aligned with browser economics, not Restate granularity:
+- **Browser #1 (login)**: Separate step — required for OTP webhook pause/resume.
+- **Browser #2 (extract_all)**: ONE browser session for discovering all accounts and
+  extracting transactions + balance for each. Eliminates N-1 browser launches.
+- Adapters declare a `BrowserPolicy` (viewport, locale, timezone, UA) so stealth
+  config matches each bank's expectations.
+- Warm browser pooling is a future optimization — the clean boundary is already in place.
+
 ## Three Layers (Always All Three)
 - **Layer 1 — Execution**: Playwright + stealth always runs. Drives the browser. Has no opinion.
-- **Layer 2 — Intelligence**: LLM (multiple focused calls per goal). Observes DOM/screenshot, returns JSON action. Provider pluggable via `LLM_PROVIDER` config, lazy-initialized in `agent/llm.py`.
-- **Layer 3 — Orchestration**: Adapter sequences goals. `HeritageBankAdapter` passes selector hints. `GenericAdapter` lets LLM discover everything. Both use same execution + intelligence layers.
+- **Layer 2 — Intelligence**: LLM (multiple focused calls per goal). Task-specific DOM observers
+  (`_dom_forms`, `_dom_tables`, `_dom_navigation`, `_dom_balance`). Provider pluggable via
+  `LLM_PROVIDER` config, lazy-initialized in `agent/llm.py`.
+- **Layer 3 — Orchestration**: Adapter sequences goals. `HeritageBankAdapter` passes selector hints.
+  `GenericAdapter` lets LLM discover everything. Both use same execution + intelligence layers.
+  `extract_all()` is the workflow-level unit of work — one browser, all accounts.
 
 ## Key Design Rules
 1. Every bank is a `BankAdapter` subclass in `src/adapters/`. Never put bank logic elsewhere.
@@ -58,20 +71,21 @@ To run on a loop during a session: `/loop 20m /review`
 ```
 cli.py                                CLI entry point (typer): sync, otp, jobs, transactions, accounts
 src/
-  adapters/base.py                    BankAdapter ABC + Pydantic data models
+  adapters/base.py                    BankAdapter ABC + data models + BrowserPolicy + AccountResult
   adapters/generic_bank_adapter.py    LLM-driven adapter (default for unknown banks)
-  adapters/heritage_bank_adapter.py   Demo bank structured adapter (selector hints + LLM fallback)
+  adapters/heritage_bank_adapter.py   Demo bank: deterministic selectors + LLM fallback
+  adapters/heritage_parsers.py        Pure parsing functions (no browser) for Heritage Bank
   adapters/__init__.py                ADAPTER_REGISTRY + get_adapter()
   agent/llm.py                        LLMClient protocol + provider implementations (Anthropic, OpenAI)
-  agent/extractor.py                  Per-goal LLM extraction functions (vision fallback)
-  core/config.py                      pydantic-settings
+  agent/extractor.py                  Per-goal LLM extraction with task-specific DOM observers
+  core/config.py                      pydantic-settings (DB pool, browser, LLM, screenshots)
   core/crypto.py                      Fernet encrypt/decrypt
   core/logging.py                     structlog JSON logging
   core/screenshots.py                 Screenshot storage (local/S3)
-  core/stealth.py                     Playwright launch + bezier mouse + human typing
-  db/models.py                        All SQLAlchemy models (multi-tenant)
-  db/session.py                       Async session factory
+  core/stealth.py                     Playwright launch + BrowserPolicy + bezier mouse + human typing
+  db/models.py                        All SQLAlchemy models (multi-tenant schema, single-tenant app)
+  db/session.py                       Lazy async session factory (engine created on first use)
   worker/app.py                       Restate ASGI app registration
-  worker/workflow.py                  @workflow.main() sync_bank + provide_otp handler
-  worker/steps.py                     Individual step functions (login, accounts, txns, balance)
+  worker/workflow.py                  Durable workflow: login → extract_all → finalise
+  worker/steps.py                     Step functions: step_login, step_extract_all, step_finalise
 ```

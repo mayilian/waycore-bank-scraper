@@ -8,7 +8,7 @@ import asyncio
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 
-from playwright.async_api import Page
+from playwright.async_api import Error as PlaywrightError, Page
 
 from src.adapters.base import AccountData, BalanceData, BankAdapter, TransactionData
 from src.agent import extractor
@@ -53,7 +53,7 @@ class GenericBankAdapter(BankAdapter):
                 await page.locator(submit_sel).first.click(timeout=2_000)
                 submitted = True
                 break
-            except Exception:
+            except PlaywrightError:
                 continue
         if not submitted:
             raise RuntimeError("Could not find OTP submit button — manual intervention required")

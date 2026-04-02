@@ -38,16 +38,95 @@ class LLMAction(BaseModel):
     selector: str | None = None
 
 
-# ── DOM helpers ───────────────────────────────────────────────────────────────
+# ── Task-specific DOM observers ──────────────────────────────────────────────
+# Each observer extracts only the DOM elements relevant to its task.
+# This reduces token cost, improves accuracy, and avoids sending irrelevant
+# noise (e.g. transaction tables when looking for a login form).
 
 
-async def _dom_summary(page: Page) -> str:
-    """Extract a compact, token-efficient representation of the visible DOM."""
+async def _dom_forms(page: Page) -> str:
+    """Extract form-related elements only: inputs, buttons, labels, forms."""
     raw: Any = await page.evaluate("""() => {
         const els = document.querySelectorAll(
-            'input, button, a, select, textarea, [role="button"], table, th, td, h1, h2, h3, label, form'
+            'input, button, select, textarea, [role="button"], label, form'
         );
-        return Array.from(els).slice(0, 250).map(el => {
+        return Array.from(els).slice(0, 100).map(el => {
+            const attrs = {};
+            for (const a of el.attributes) attrs[a.name] = a.value;
+            return {
+                tag: el.tagName.toLowerCase(),
+                text: (el.innerText || el.value || '').trim().slice(0, 60),
+                attrs,
+            };
+        });
+    }""")
+    return json.dumps(raw)[:_MAX_DOM_CHARS]
+
+
+async def _dom_tables(page: Page) -> str:
+    """Extract table structure: tables, headers, rows, and cells."""
+    raw: Any = await page.evaluate("""() => {
+        const els = document.querySelectorAll('table, th, td, tr, caption');
+        return Array.from(els).slice(0, 400).map(el => {
+            const attrs = {};
+            for (const a of el.attributes) attrs[a.name] = a.value;
+            return {
+                tag: el.tagName.toLowerCase(),
+                text: (el.innerText || '').trim().slice(0, 120),
+                attrs,
+            };
+        });
+    }""")
+    return json.dumps(raw)[:_MAX_DOM_CHARS]
+
+
+async def _dom_navigation(page: Page) -> str:
+    """Extract navigation elements: links, buttons, headings, nav."""
+    raw: Any = await page.evaluate("""() => {
+        const els = document.querySelectorAll(
+            'a, button, [role="button"], nav, h1, h2, h3, [role="tab"], [role="link"]'
+        );
+        return Array.from(els).slice(0, 150).map(el => {
+            const attrs = {};
+            for (const a of el.attributes) attrs[a.name] = a.value;
+            return {
+                tag: el.tagName.toLowerCase(),
+                text: (el.innerText || '').trim().slice(0, 80),
+                attrs,
+            };
+        });
+    }""")
+    return json.dumps(raw)[:_MAX_DOM_CHARS]
+
+
+async def _dom_balance(page: Page) -> str:
+    """Extract balance-relevant elements: headings, summary text, key-value pairs."""
+    raw: Any = await page.evaluate("""() => {
+        const els = document.querySelectorAll(
+            'h1, h2, h3, h4, [class*="balance"], [class*="summary"], '
+            + '[class*="amount"], [class*="total"], dt, dd, th, td, span, strong'
+        );
+        return Array.from(els).slice(0, 150).map(el => {
+            const attrs = {};
+            for (const a of el.attributes) attrs[a.name] = a.value;
+            return {
+                tag: el.tagName.toLowerCase(),
+                text: (el.innerText || '').trim().slice(0, 100),
+                attrs,
+            };
+        });
+    }""")
+    return json.dumps(raw)[:_MAX_DOM_CHARS]
+
+
+async def _dom_page_state(page: Page) -> str:
+    """Extract page state indicators: nav, headings, forms, alerts."""
+    raw: Any = await page.evaluate("""() => {
+        const els = document.querySelectorAll(
+            'nav, h1, h2, h3, form, [role="alert"], [class*="error"], '
+            + '[class*="dashboard"], [class*="otp"], input, button'
+        );
+        return Array.from(els).slice(0, 100).map(el => {
             const attrs = {};
             for (const a of el.attributes) attrs[a.name] = a.value;
             return {
@@ -57,7 +136,6 @@ async def _dom_summary(page: Page) -> str:
             };
         });
     }""")
-    # page.evaluate returns a list of dicts; serialize to JSON for the LLM
     return json.dumps(raw)[:_MAX_DOM_CHARS]
 
 
@@ -81,7 +159,7 @@ async def _ask(
 
 async def find_login_fields(page: Page) -> dict[str, str]:
     """Return {username_selector, password_selector, submit_selector}."""
-    dom = await _dom_summary(page)
+    dom = await _dom_forms(page)
     screenshot = await _screenshot_b64(page)
 
     system = (
@@ -105,7 +183,7 @@ async def find_login_fields(page: Page) -> dict[str, str]:
 
 async def detect_post_login_state(page: Page) -> str:
     """Return one of: 'logged_in', 'otp_required', 'login_failed'."""
-    dom = await _dom_summary(page)
+    dom = await _dom_page_state(page)
     screenshot = await _screenshot_b64(page)
 
     system = (
@@ -129,7 +207,7 @@ async def detect_post_login_state(page: Page) -> str:
 
 async def find_otp_field(page: Page) -> str:
     """Return CSS selector for the OTP input field."""
-    dom = await _dom_summary(page)
+    dom = await _dom_forms(page)
     screenshot = await _screenshot_b64(page)
 
     system = (
@@ -147,7 +225,7 @@ async def find_otp_field(page: Page) -> str:
 
 async def extract_accounts(page: Page) -> list[dict[str, Any]]:
     """Return list of {external_id, name, account_type, currency} dicts."""
-    dom = await _dom_summary(page)
+    dom = await _dom_tables(page)
     screenshot = await _screenshot_b64(page)
 
     system = (
@@ -173,7 +251,7 @@ async def extract_accounts(page: Page) -> list[dict[str, Any]]:
 
 async def extract_transactions_from_page(page: Page) -> list[dict[str, Any]]:
     """Extract all transactions visible in the current page/view."""
-    dom = await _dom_summary(page)
+    dom = await _dom_tables(page)
     screenshot = await _screenshot_b64(page)
 
     system = (
@@ -203,7 +281,7 @@ async def extract_transactions_from_page(page: Page) -> list[dict[str, Any]]:
 
 async def find_account_link(page: Page, account_external_id: str) -> LLMAction:
     """Return a click action targeting the link/button for a specific account."""
-    dom = await _dom_summary(page)
+    dom = await _dom_navigation(page)
     screenshot = await _screenshot_b64(page)
 
     system = (
@@ -224,12 +302,14 @@ async def find_account_link(page: Page, account_external_id: str) -> LLMAction:
             selector=data.get("selector"),
         )
     except (json.JSONDecodeError, ValueError):
-        return LLMAction(action=ActionType.DONE)
+        raise ValueError(
+            f"Could not parse account navigation from LLM response for '{account_external_id}': {raw}"
+        )
 
 
 async def check_has_next_page(page: Page) -> LLMAction:
     """Return a click action for the next page button, or DONE if no more pages."""
-    dom = await _dom_summary(page)
+    dom = await _dom_navigation(page)
     screenshot = await _screenshot_b64(page)
 
     system = (
@@ -254,7 +334,7 @@ async def check_has_next_page(page: Page) -> LLMAction:
 
 async def extract_balance(page: Page) -> dict[str, Any]:
     """Return {current, available, currency} for the current account view."""
-    dom = await _dom_summary(page)
+    dom = await _dom_balance(page)
     screenshot = await _screenshot_b64(page)
 
     system = (

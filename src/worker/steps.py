@@ -1,11 +1,13 @@
 """Restate workflow step implementations.
 
-Each function is a self-contained unit of work:
-  - Opens a fresh browser and restores session cookies
-  - Performs one logical phase of the sync
-  - Writes a sync_steps record on completion (success or failed)
-  - Saves a screenshot on failure
-  - Returns JSON-serializable data for Restate to journal
+Step boundaries are aligned with browser session economics:
+  - step_login: Opens browser #1 — login, OTP, capture session cookies.
+  - step_extract_all: Opens browser #2 — restores session, discovers accounts,
+    extracts transactions + balance for ALL accounts in one browser session.
+  - step_finalise: No browser — marks job complete.
+
+This design gives 2 browser launches per sync (not N+2), while keeping
+login separate for OTP webhook pause/resume.
 
 IMPORTANT: These functions must not call back into the Restate context.
 They are plain async functions — Restate calls them as durable side effects.
@@ -22,12 +24,20 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.engine import CursorResult
 
 from src.adapters import get_adapter
-from src.adapters.base import AccountData
+from src.adapters.base import AccountData, AccountResult, BalanceData, TransactionData
 from src.core.crypto import decrypt
 from src.core.logging import get_logger
 from src.core.screenshots import get_screenshot_store
 from src.core.stealth import stealth_browser
-from src.db.models import Account, Balance, BankConnection, SyncJob, SyncStep, Transaction
+from src.db.models import (
+    Account,
+    AccountSyncResult,
+    Balance,
+    BankConnection,
+    SyncJob,
+    SyncStep,
+    Transaction,
+)
 from src.db.session import get_session
 
 log = get_logger(__name__)
@@ -84,8 +94,7 @@ async def _capture_failure(
 
 async def step_login(connection_id: str, job_id: str, otp: str | None) -> dict[str, Any]:
     """Navigate to the bank, log in, handle OTP if provided.
-    Returns {storage_state, post_login_url} for subsequent steps.
-    The OTP is decrypted from DB for static mode; passed directly for webhook mode.
+    Returns {storage_state, post_login_url, bank_slug} for subsequent steps.
     """
     started_at = datetime.now(UTC)
     log.info("step.login.start", job_id=job_id)
@@ -98,15 +107,15 @@ async def step_login(connection_id: str, job_id: str, otp: str | None) -> dict[s
         bank_slug = conn.bank_slug
         username = decrypt(conn.username_enc)
         password = decrypt(conn.password_enc)
-        # For static/totp modes, use the OTP stored in DB (never passed through Restate payload)
         if otp is None and conn.otp_mode in ("static", "totp") and conn.otp_value_enc:
             otp = decrypt(conn.otp_value_enc)
 
-    async with stealth_browser() as (_browser, page):
+    adapter = get_adapter(bank_slug)
+    adapter.job_id = job_id
+
+    async with stealth_browser(policy=adapter.browser_policy) as (_browser, page):
         try:
             await page.goto(login_url, wait_until="networkidle", timeout=20_000)
-            adapter = get_adapter(bank_slug)
-            adapter.job_id = job_id
 
             await adapter.navigate_to_login(page)
             await adapter.fill_and_submit_credentials(page, username, password)
@@ -130,200 +139,207 @@ async def step_login(connection_id: str, job_id: str, otp: str | None) -> dict[s
         started_at=started_at,
     )
     log.info("step.login.success", job_id=job_id)
-    return {"storage_state": state, "post_login_url": post_login_url}
+    return {"storage_state": state, "post_login_url": post_login_url, "bank_slug": bank_slug}
 
 
-# ── Step: get_accounts ─────────────────────────────────────────────────────────
+# ── Step: extract_all ─────────────────────────────────────────────────────────
+# One browser session for the entire extraction phase:
+#   restore session → discover accounts → extract each account sequentially.
+# This eliminates N-1 browser launches and session restores.
 
 
-async def step_get_accounts(
-    connection_id: str, job_id: str, session_state: StorageState, post_login_url: str
-) -> list[dict[str, Any]]:
-    """Navigate to the dashboard and extract all accounts.
-    Returns list of AccountData dicts (serializable for Restate journal).
-    Persists accounts to DB.
+async def step_extract_all(
+    connection_id: str,
+    job_id: str,
+    session_state: StorageState,
+    post_login_url: str,
+    bank_slug: str,
+) -> dict[str, Any]:
+    """Extract all accounts, transactions, and balances in a single browser session.
+
+    Returns {accounts: [...], results: [...], errors: [...]}.
+    Persists accounts, transactions, balances, and AccountSyncResult rows.
     """
     started_at = datetime.now(UTC)
-    log.info("step.get_accounts.start", job_id=job_id)
+    log.info("step.extract_all.start", job_id=job_id)
 
-    async with get_session() as db:
-        conn = await db.get(BankConnection, connection_id)
-        if not conn:
-            raise ValueError(f"BankConnection {connection_id} not found")
-        bank_slug = conn.bank_slug
+    adapter = get_adapter(bank_slug)
+    adapter.job_id = job_id
 
-    async with stealth_browser(storage_state=session_state) as (_browser, page):
+    async with stealth_browser(
+        storage_state=session_state, policy=adapter.browser_policy
+    ) as (_browser, page):
         try:
             await page.goto(post_login_url, wait_until="networkidle", timeout=20_000)
-            adapter = get_adapter(bank_slug)
-            adapter.job_id = job_id
-            accounts = await adapter.get_accounts(page)
+            accounts, results = await adapter.extract_all(page, post_login_url)
         except Exception as exc:
-            await _capture_failure(page, job_id, "get_accounts", exc, started_at)
+            await _capture_failure(page, job_id, "extract_all", exc, started_at)
             raise
 
-    # Persist to DB — batch fetch existing, insert new
-    account_dicts = []
-    async with get_session() as db:
-        existing_result = await db.execute(
-            select(Account).where(Account.connection_id == connection_id)
-        )
-        existing_by_ext_id = {a.external_id: a.id for a in existing_result.scalars().all()}
+    if not accounts:
+        raise RuntimeError("No accounts found — expected at least one account after login")
 
+    # Persist everything to DB
+    account_dicts = await _persist_accounts(connection_id, job_id, accounts)
+    account_errors: list[str] = []
+
+    for result in results:
+        db_id = account_dicts.get(result.account.external_id)
+        if not db_id:
+            continue
+
+        if result.error:
+            account_errors.append(f"{result.account.external_id}: {result.error}")
+            await _write_account_result(
+                job_id, db_id, "failed", error=result.error, started_at=started_at
+            )
+            await _write_step(
+                job_id,
+                f"extract_{result.account.external_id}",
+                "failed",
+                output={"error": result.error},
+                started_at=started_at,
+            )
+            continue
+
+        inserted = await _persist_transactions(job_id, db_id, result.transactions)
+        await _persist_balance(db_id, result.balance)
+        await _write_account_result(
+            job_id,
+            db_id,
+            "success",
+            transactions_found=len(result.transactions),
+            transactions_inserted=inserted,
+            balance_captured=True,
+            started_at=started_at,
+        )
+
+        # Write per-account step for audit trail
+        await _write_step(
+            job_id,
+            f"extract_{result.account.external_id}",
+            "success",
+            output={
+                "transactions_total": len(result.transactions),
+                "transactions_inserted": inserted,
+                "balance_current": str(result.balance.current),
+                "balance_currency": result.balance.currency,
+            },
+            started_at=started_at,
+        )
+        log.info(
+            "step.extract_account.success",
+            job_id=job_id,
+            account=result.account.external_id,
+            transactions_inserted=inserted,
+            balance=str(result.balance.current),
+        )
+
+    # Write the extract_all step
+    await _write_step(
+        job_id,
+        "extract_all",
+        "success" if not account_errors else "partial",
+        output={
+            "accounts_found": len(accounts),
+            "accounts_extracted": len(accounts) - len(account_errors),
+            "errors": account_errors,
+        },
+        started_at=started_at,
+    )
+    log.info(
+        "step.extract_all.success",
+        job_id=job_id,
+        accounts=len(accounts),
+        errors=len(account_errors),
+    )
+    return {
+        "accounts_found": len(accounts),
+        "accounts_extracted": len(accounts) - len(account_errors),
+        "errors": account_errors,
+    }
+
+
+# ── DB persistence helpers ────────────────────────────────────────────────────
+
+
+async def _persist_accounts(
+    connection_id: str, job_id: str, accounts: list[AccountData]
+) -> dict[str, str]:
+    """Persist discovered accounts and return {external_id: db_id} mapping.
+
+    Uses ON CONFLICT DO UPDATE to handle concurrent syncs for the same connection.
+    """
+    account_map: dict[str, str] = {}
+
+    async with get_session() as db:
         for acc_data in accounts:
-            if acc_data.external_id in existing_by_ext_id:
-                account_db_id = existing_by_ext_id[acc_data.external_id]
-            else:
-                new_account = Account(
-                    id=str(uuid.uuid4()),
+            db_id = str(uuid.uuid4())
+            stmt = (
+                pg_insert(Account)
+                .values(
+                    id=db_id,
                     connection_id=connection_id,
                     external_id=acc_data.external_id,
                     name=acc_data.name,
                     account_type=acc_data.account_type,
                     currency=acc_data.currency,
                 )
-                db.add(new_account)
-                account_db_id = new_account.id
-
-            account_dicts.append({**acc_data.model_dump(), "db_id": account_db_id})
+                .on_conflict_do_update(
+                    index_elements=["connection_id", "external_id"],
+                    set_={"name": acc_data.name, "account_type": acc_data.account_type},
+                )
+                .returning(Account.id)
+            )
+            result = await db.execute(stmt)
+            account_map[acc_data.external_id] = result.scalar_one()
 
         job = await db.get(SyncJob, job_id)
         if job:
             job.accounts_synced = len(accounts)
 
-    await _write_step(
-        job_id,
-        "get_accounts",
-        "success",
-        output={"count": len(accounts), "account_ids": [a["db_id"] for a in account_dicts]},
-        started_at=started_at,
-    )
-    log.info("step.get_accounts.success", job_id=job_id, count=len(accounts))
-    return account_dicts
+    return account_map
 
 
-# ── Step: get_transactions ─────────────────────────────────────────────────────
-
-
-async def step_get_transactions(
-    connection_id: str,
-    job_id: str,
-    session_state: StorageState,
-    account_dict: dict[str, Any],
-    post_login_url: str,
+async def _persist_transactions(
+    job_id: str, account_db_id: str, transactions: list[TransactionData]
 ) -> int:
-    """Extract all transactions for one account and persist to DB.
-    Returns count of transactions stored.
-    """
-    account = AccountData(
-        external_id=account_dict["external_id"],
-        name=account_dict.get("name"),
-        account_type=account_dict.get("account_type"),
-        currency=account_dict.get("currency", "USD"),
-    )
-    account_db_id: str = account_dict["db_id"]
-    step_name = f"transactions_{account.external_id}"
-    started_at = datetime.now(UTC)
-    log.info("step.transactions.start", job_id=job_id, account=account.external_id)
+    """Batch-insert transactions with ON CONFLICT DO NOTHING. Returns inserted count."""
+    if not transactions:
+        return 0
 
+    rows = [
+        {
+            "id": str(uuid.uuid4()),
+            "account_id": account_db_id,
+            "external_id": txn.external_id,
+            "posted_at": txn.posted_at,
+            "description": txn.description,
+            "amount": txn.amount,
+            "currency": txn.currency,
+            "running_balance": txn.running_balance,
+            "raw": txn.raw,
+        }
+        for txn in transactions
+    ]
     async with get_session() as db:
-        conn = await db.get(BankConnection, connection_id)
-        if not conn:
-            raise ValueError(f"BankConnection {connection_id} not found")
-        bank_slug = conn.bank_slug
+        stmt = (
+            pg_insert(Transaction)
+            .values(rows)
+            .on_conflict_do_nothing(index_elements=["account_id", "external_id"])
+        )
+        cursor_result: CursorResult[Any] = await db.execute(stmt)  # type: ignore[assignment]
+        inserted = cursor_result.rowcount
 
-    async with stealth_browser(storage_state=session_state) as (_browser, page):
-        try:
-            await page.goto(post_login_url, wait_until="networkidle", timeout=20_000)
-            adapter = get_adapter(bank_slug)
-            adapter.job_id = job_id
-            await adapter.navigate_to_account(page, account)
-            transactions = await adapter.get_transactions(page, account)
-        except Exception as exc:
-            await _capture_failure(page, job_id, step_name, exc, started_at)
-            raise
+        job = await db.get(SyncJob, job_id)
+        if job:
+            job.transactions_synced = (job.transactions_synced or 0) + inserted
 
-    # Persist — batch insert with ON CONFLICT DO NOTHING (idempotent re-runs)
-    inserted = 0
-    if transactions:
-        rows = [
-            {
-                "id": str(uuid.uuid4()),
-                "account_id": account_db_id,
-                "external_id": txn.external_id,
-                "posted_at": txn.posted_at,
-                "description": txn.description,
-                "amount": txn.amount,
-                "currency": txn.currency,
-                "running_balance": txn.running_balance,
-                "raw": txn.raw,
-            }
-            for txn in transactions
-        ]
-        async with get_session() as db:
-            stmt = (
-                pg_insert(Transaction)
-                .values(rows)
-                .on_conflict_do_nothing(index_elements=["account_id", "external_id"])
-            )
-            cursor_result: CursorResult[Any] = await db.execute(stmt)  # type: ignore[assignment]
-            inserted = cursor_result.rowcount
-
-            job = await db.get(SyncJob, job_id)
-            if job:
-                job.transactions_synced = (job.transactions_synced or 0) + inserted
-
-    await _write_step(
-        job_id,
-        step_name,
-        "success",
-        output={"total": len(transactions), "inserted": inserted},
-        started_at=started_at,
-    )
-    log.info(
-        "step.transactions.success", job_id=job_id, account=account.external_id, inserted=inserted
-    )
     return inserted
 
 
-# ── Step: get_balance ──────────────────────────────────────────────────────────
-
-
-async def step_get_balance(
-    connection_id: str,
-    job_id: str,
-    session_state: StorageState,
-    account_dict: dict[str, Any],
-    post_login_url: str,
-) -> dict[str, Any]:
-    """Extract and persist the current balance for one account."""
-    account = AccountData(
-        external_id=account_dict["external_id"],
-        name=account_dict.get("name"),
-        account_type=account_dict.get("account_type"),
-        currency=account_dict.get("currency", "USD"),
-    )
-    account_db_id: str = account_dict["db_id"]
-    step_name = f"balance_{account.external_id}"
-    started_at = datetime.now(UTC)
-
-    async with get_session() as db:
-        conn = await db.get(BankConnection, connection_id)
-        if not conn:
-            raise ValueError(f"BankConnection {connection_id} not found")
-        bank_slug = conn.bank_slug
-
-    async with stealth_browser(storage_state=session_state) as (_browser, page):
-        try:
-            await page.goto(post_login_url, wait_until="networkidle", timeout=20_000)
-            adapter = get_adapter(bank_slug)
-            adapter.job_id = job_id
-            await adapter.navigate_to_account(page, account)
-            balance = await adapter.get_balance(page, account)
-        except Exception as exc:
-            await _capture_failure(page, job_id, step_name, exc, started_at)
-            raise
-
+async def _persist_balance(account_db_id: str, balance: BalanceData) -> None:
+    """Append a balance snapshot."""
     async with get_session() as db:
         db.add(
             Balance(
@@ -336,14 +352,33 @@ async def step_get_balance(
             )
         )
 
-    await _write_step(
-        job_id,
-        step_name,
-        "success",
-        output={"current": str(balance.current), "currency": balance.currency},
-        started_at=started_at,
-    )
-    return {"current": str(balance.current), "currency": balance.currency}
+
+async def _write_account_result(
+    job_id: str,
+    account_id: str,
+    status: str,
+    *,
+    transactions_found: int = 0,
+    transactions_inserted: int = 0,
+    balance_captured: bool = False,
+    error: str | None = None,
+    started_at: datetime | None = None,
+) -> None:
+    async with get_session() as db:
+        db.add(
+            AccountSyncResult(
+                id=str(uuid.uuid4()),
+                job_id=job_id,
+                account_id=account_id,
+                status=status,
+                transactions_found=transactions_found,
+                transactions_inserted=transactions_inserted,
+                balance_captured=balance_captured,
+                error=error,
+                started_at=started_at or datetime.now(UTC),
+                completed_at=datetime.now(UTC),
+            )
+        )
 
 
 # ── Step: finalise ─────────────────────────────────────────────────────────────

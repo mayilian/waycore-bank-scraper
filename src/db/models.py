@@ -1,17 +1,15 @@
 """SQLAlchemy ORM models.
 
-Multi-tenant hierarchy: organizations → users → bank_connections → accounts
-→ transactions / balances.
+Schema: organizations → users → bank_connections → accounts → transactions / balances.
 
-All money columns use NUMERIC(20,4) — never Float.
-Balances are append-only (never updated).
-Transactions are idempotent via UNIQUE(account_id, external_id).
+The multi-tenant hierarchy (Organization, User) exists in the schema but the
+application is currently single-tenant: CLI hardcodes a default org/user.
+Multi-tenant enforcement (RLS, per-session org_id) is not yet implemented.
 
-Designed for future horizontal scaling:
-  - Partition `transactions` by posted_at year for large datasets.
-  - Enable Postgres RLS on all tables and set `app.current_org_id` per session
-    to enforce tenant isolation at the database layer.
-  - Citus distribution key: account_id on transactions for sharded deployments.
+Invariants:
+  - All money columns: NUMERIC(20,4) — never Float.
+  - Balances: append-only (never updated).
+  - Transactions: idempotent via UNIQUE(account_id, external_id).
 """
 
 import uuid
@@ -21,6 +19,7 @@ from typing import Any
 
 from sqlalchemy import (
     JSON,
+    Boolean,
     DateTime,
     ForeignKey,
     Integer,
@@ -201,6 +200,43 @@ class SyncJob(Base):
     steps: Mapped[list["SyncStep"]] = relationship(
         "SyncStep", back_populates="job", order_by="SyncStep.created_at"
     )
+    account_results: Mapped[list["AccountSyncResult"]] = relationship(
+        "AccountSyncResult", back_populates="job", order_by="AccountSyncResult.created_at"
+    )
+
+
+class AccountSyncResult(Base):
+    """Per-account outcome within a sync job.
+
+    First-class entity for partial success — no longer reconstructed from step rows.
+    One row per (job, account) pair. Tracks what was extracted and any error.
+    """
+
+    __tablename__ = "account_sync_results"
+    __table_args__ = (UniqueConstraint("job_id", "account_id"),)
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    job_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("sync_jobs.id"), nullable=False, index=True
+    )
+    account_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("accounts.id"), nullable=False, index=True
+    )
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False
+    )  # success | failed | partial
+    transactions_found: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    transactions_inserted: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    balance_captured: Mapped[bool] = mapped_column(nullable=False, server_default="false")
+    error: Mapped[str | None] = mapped_column(Text)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    job: Mapped["SyncJob"] = relationship("SyncJob", back_populates="account_results")
+    account: Mapped["Account"] = relationship("Account")
 
 
 class SyncStep(Base):

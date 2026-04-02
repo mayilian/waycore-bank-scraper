@@ -7,6 +7,10 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     database_url: str = "postgresql+asyncpg://waycore:waycore@localhost:5432/waycore"
+    db_pool_size: int = 5
+    db_max_overflow: int = 10
+    db_pool_recycle: int = 3600  # seconds — recycle connections after 1 hour
+    db_echo: bool = False  # set True for SQL logging in development
     anthropic_api_key: str = ""
     openai_api_key: str = ""
     llm_provider: str = "anthropic"  # "anthropic" or "openai"
