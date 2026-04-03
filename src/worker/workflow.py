@@ -87,13 +87,14 @@ async def run(ctx: WorkflowContext, req: dict[str, Any]) -> dict[str, Any]:
     job_id: str = req["job_id"]
     connection_id: str = req["connection_id"]
     otp_mode: str = req.get("otp_mode", "static")
+    provided_otp: str | None = req.get("otp")
 
     log.info("workflow.start", job_id=job_id, connection_id=connection_id)
 
     await ctx.run("mark_running", functools.partial(_set_job_status, job_id, "running"))
 
     try:
-        return await _run_sync(ctx, job_id, connection_id, otp_mode)
+        return await _run_sync(ctx, job_id, connection_id, otp_mode, provided_otp)
     except Exception as exc:
         await ctx.run(
             "mark_failed",
@@ -133,7 +134,11 @@ def _check_timeout(sync_start: datetime, job_id: str) -> None:
 
 
 async def _run_sync(
-    ctx: WorkflowContext, job_id: str, connection_id: str, otp_mode: str
+    ctx: WorkflowContext,
+    job_id: str,
+    connection_id: str,
+    otp_mode: str,
+    provided_otp: str | None = None,
 ) -> dict[str, Any]:
     reset_llm_budget()
     sync_start = datetime.now(UTC)
@@ -159,59 +164,63 @@ async def _run_sync(
     )
     bind_job_context(job_id, connection_id, bank_slug)
 
-    # ── Browser section (login + extract) ─────────────────────────────────────
-    # Both steps launch browsers, so both must be gated by concurrency limits.
-    # Two layers: global limit (prevent OOM) + per-bank limit (prevent IP bans).
-    async with acquire_sync_slot(bank_slug):
-        _check_timeout(sync_start, job_id)
+    try:
+        # ── Browser section (login + extract) ─────────────────────────────────
+        # Both steps launch browsers, so both must be gated by concurrency limits.
+        # Two layers: global limit (prevent OOM) + per-bank limit (prevent IP bans).
+        async with acquire_sync_slot(bank_slug):
+            _check_timeout(sync_start, job_id)
 
-        # Step 1: Login (browser #1)
-        login_result: dict[str, Any] = await ctx.run(
-            "login",
-            functools.partial(steps.step_login, connection_id, job_id, webhook_otp),
+            # Step 1: Login (browser #1)
+            # OTP priority: webhook OTP (from ctx.promise) > request-provided OTP > stored OTP (resolved in step_login)
+            otp_for_login = webhook_otp or provided_otp
+            login_result: dict[str, Any] = await ctx.run(
+                "login",
+                functools.partial(steps.step_login, connection_id, job_id, otp_for_login),
+            )
+            session_state: Any = login_result["storage_state"]
+            post_login_url: str = login_result["post_login_url"]
+
+            _check_timeout(sync_start, job_id)
+
+            # Step 2: Extract all accounts (browser #2)
+            extract_result: dict[str, Any] = await ctx.run(
+                "extract_all",
+                functools.partial(
+                    steps.step_extract_all,
+                    connection_id,
+                    job_id,
+                    session_state,
+                    post_login_url,
+                    bank_slug,
+                ),
+            )
+
+        account_errors: list[str] = extract_result.get("errors", [])
+        accounts_found: int = extract_result.get("accounts_found", 0)
+
+        # ── Step 3: Finalise ──────────────────────────────────────────────────
+        if account_errors and len(account_errors) >= accounts_found:
+            raise RuntimeError(f"All account extractions failed: {'; '.join(account_errors)}")
+
+        final_status = "partial_success" if account_errors else "success"
+        await ctx.run(
+            "finalise",
+            functools.partial(steps.step_finalise, job_id, final_status),
         )
-        session_state: Any = login_result["storage_state"]
-        post_login_url: str = login_result["post_login_url"]
 
-        _check_timeout(sync_start, job_id)
+        duration = (datetime.now(UTC) - sync_start).total_seconds()
+        metrics.sync_completed(bank_slug, duration, final_status)
 
-        # Step 2: Extract all accounts (browser #2)
-        extract_result: dict[str, Any] = await ctx.run(
-            "extract_all",
-            functools.partial(
-                steps.step_extract_all,
-                connection_id,
-                job_id,
-                session_state,
-                post_login_url,
-                bank_slug,
-            ),
-        )
-
-    account_errors: list[str] = extract_result.get("errors", [])
-    accounts_found: int = extract_result.get("accounts_found", 0)
-
-    # ── Step 3: Finalise ──────────────────────────────────────────────────────
-    if account_errors and len(account_errors) >= accounts_found:
-        raise RuntimeError(f"All account extractions failed: {'; '.join(account_errors)}")
-
-    final_status = "partial_success" if account_errors else "success"
-    await ctx.run(
-        "finalise",
-        functools.partial(steps.step_finalise, job_id, final_status),
-    )
-
-    duration = (datetime.now(UTC) - sync_start).total_seconds()
-    metrics.sync_completed(bank_slug, duration, final_status)
-    clear_job_context()
-
-    log.info("workflow.complete", job_id=job_id, status=final_status, duration_secs=duration)
-    return {
-        "status": final_status,
-        "accounts_found": accounts_found,
-        "accounts_extracted": extract_result.get("accounts_extracted", 0),
-        "errors": account_errors,
-    }
+        log.info("workflow.complete", job_id=job_id, status=final_status, duration_secs=duration)
+        return {
+            "status": final_status,
+            "accounts_found": accounts_found,
+            "accounts_extracted": extract_result.get("accounts_extracted", 0),
+            "errors": account_errors,
+        }
+    finally:
+        clear_job_context()
 
 
 @sync_workflow.handler()

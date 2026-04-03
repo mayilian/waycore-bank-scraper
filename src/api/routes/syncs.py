@@ -36,7 +36,7 @@ async def start_sync(
             422, "OTP is required when otp_mode is 'static' and no OTP is stored on the connection"
         )
 
-    job_id = await trigger_sync(connection_id, req.otp_mode)
+    job_id = await trigger_sync(connection_id, req.otp_mode, req.otp)
     return TriggerSyncResponse(job_id=job_id)
 
 

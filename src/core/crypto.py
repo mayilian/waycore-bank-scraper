@@ -19,14 +19,15 @@ def _get_fernet() -> MultiFernet:
     global _fernet
     if _fernet is None:
         try:
-            keys = [Fernet(settings.encryption_key.encode())]
+            keys = [Fernet(settings.encryption_key.get_secret_value().encode())]
         except Exception:
             raise ValueError(
                 "ENCRYPTION_KEY is not a valid Fernet key. "
                 'Generate one with: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"'
             )
-        if settings.encryption_key_previous:
-            keys.append(Fernet(settings.encryption_key_previous.encode()))
+        prev = settings.encryption_key_previous.get_secret_value()
+        if prev:
+            keys.append(Fernet(prev.encode()))
         _fernet = MultiFernet(keys)
     return _fernet
 

@@ -77,7 +77,9 @@ async def find_or_create_connection(
         return connection_id, bank_slug
 
 
-async def trigger_sync(connection_id: str, otp_mode: str = "static") -> str:
+async def trigger_sync(
+    connection_id: str, otp_mode: str = "static", otp: str | None = None
+) -> str:
     """Create a SyncJob and trigger the Restate workflow. Returns job_id."""
     job_id = str(uuid.uuid4())
 
@@ -96,6 +98,8 @@ async def trigger_sync(connection_id: str, otp_mode: str = "static") -> str:
         "connection_id": connection_id,
         "otp_mode": otp_mode,
     }
+    if otp is not None:
+        payload["otp"] = otp
     try:
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.post(

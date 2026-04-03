@@ -180,7 +180,7 @@ def get_llm_client() -> LLMClient:
         provider = settings.llm_provider
         if provider == "anthropic":
             _client = AnthropicClient(
-                api_key=settings.anthropic_api_key,
+                api_key=settings.anthropic_api_key.get_secret_value(),
                 model=settings.llm_model or "claude-sonnet-4-6",
             )
         elif provider == "bedrock":
@@ -190,7 +190,7 @@ def get_llm_client() -> LLMClient:
             )
         elif provider == "openai":
             _client = OpenAIClient(
-                api_key=settings.openai_api_key,
+                api_key=settings.openai_api_key.get_secret_value(),
                 model=settings.llm_model or "gpt-4o",
             )
         else:

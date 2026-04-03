@@ -27,7 +27,6 @@ from typing import Any
 from playwright.async_api import Page, StorageState
 from sqlalchemy import insert as sa_insert
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.engine import CursorResult
 
 from src.adapters import get_adapter
 from src.adapters.base import AccountData
@@ -278,15 +277,19 @@ async def step_extract_all(
         )
 
     # Batch DB writes — 1 session instead of N per account
+    inserted_by_account: dict[str, int] = {}
     async with get_session() as db:
         if all_txn_rows:
             stmt = (
                 pg_insert(Transaction)
                 .values(all_txn_rows)
                 .on_conflict_do_nothing(index_elements=["account_id", "external_id"])
+                .returning(Transaction.account_id)
             )
-            cursor_result: CursorResult[Any] = await db.execute(stmt)  # type: ignore[assignment]
-            total_inserted = cursor_result.rowcount
+            rows = (await db.execute(stmt)).all()
+            for (acct_id,) in rows:
+                inserted_by_account[acct_id] = inserted_by_account.get(acct_id, 0) + 1
+            total_inserted = len(rows)
 
             job = await db.get(SyncJob, job_id)
             if job:
@@ -295,21 +298,26 @@ async def step_extract_all(
         if all_balance_rows:
             await db.execute(sa_insert(Balance).values(all_balance_rows))
 
+        # Patch per-account inserted counts before writing result rows
+        for row in all_result_rows:
+            if row["status"] == "success":
+                row["transactions_inserted"] = inserted_by_account.get(row["account_id"], 0)
+
         if all_result_rows:
             await db.execute(sa_insert(AccountSyncResult).values(all_result_rows))
 
         if all_step_rows:
             await db.execute(sa_insert(SyncStep).values(all_step_rows))
 
-    # Update account_result rows with actual inserted counts
-    # (total_inserted is across all accounts — log it at the job level)
     for result in results:
         if not result.error:
+            db_id = account_dicts.get(result.account.external_id)
             log.info(
                 "step.extract_account.success",
                 job_id=job_id,
                 account=result.account.external_id,
-                transactions=len(result.transactions),
+                transactions_found=len(result.transactions),
+                transactions_inserted=inserted_by_account.get(db_id, 0) if db_id else 0,
                 balance=str(result.balance.current),
             )
 
@@ -348,10 +356,8 @@ async def _persist_accounts(
 ) -> dict[str, str]:
     """Persist discovered accounts and return {external_id: db_id} mapping.
 
-    Batched: one INSERT ... ON CONFLICT per account list, returning all IDs.
+    Single INSERT ... ON CONFLICT for the entire account list, returning all IDs.
     """
-    account_map: dict[str, str] = {}
-
     rows = [
         {
             "id": str(uuid.uuid4()),
@@ -365,19 +371,22 @@ async def _persist_accounts(
     ]
 
     async with get_session() as db:
-        for row in rows:
-            stmt = (
-                pg_insert(Account)
-                .values(row)
-                .on_conflict_do_update(
-                    index_elements=["connection_id", "external_id"],
-                    set_={"name": row["name"], "account_type": row["account_type"]},
-                )
-                .returning(Account.id, Account.external_id)
+        excluded = pg_insert(Account).excluded
+        stmt = (
+            pg_insert(Account)
+            .values(rows)
+            .on_conflict_do_update(
+                index_elements=["connection_id", "external_id"],
+                set_={
+                    "name": excluded.name,
+                    "account_type": excluded.account_type,
+                    "currency": excluded.currency,
+                },
             )
-            result = await db.execute(stmt)
-            db_id, ext_id = result.one()
-            account_map[ext_id] = db_id
+            .returning(Account.id, Account.external_id)
+        )
+        result = await db.execute(stmt)
+        account_map: dict[str, str] = {ext_id: db_id for db_id, ext_id in result.all()}
 
         job = await db.get(SyncJob, job_id)
         if job:
