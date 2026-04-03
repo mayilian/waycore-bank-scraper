@@ -38,7 +38,7 @@ Read CLAUDE.md first. The project is a durable browser-automation workflow:
 - Abstractions that exist for one caller
 
 **CLAUDE.md rule violations**
-- Bank-specific logic outside `src/adapters/`
+- Bank-specific logic outside `src/bank_adapters/`
 - Step functions that don't write `sync_steps` records
 - Errors swallowed without screenshot + step status update
 - Plaintext credentials anywhere

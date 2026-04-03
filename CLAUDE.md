@@ -15,7 +15,7 @@ CLI (`cli.py`) for local dev. Both API and CLI call `src/services/operations.py`
 
 ## Coding Conventions
 
-1. Every bank is a `BankAdapter` subclass in `src/adapters/`. Bank-specific logic stays there.
+1. Every bank is a `BankAdapter` subclass in `src/bank_adapters/<bank>/adapter.py`. Bank-specific logic stays there.
 2. LLM calls are per-goal with task-specific system prompts. No mega-prompts.
 3. API routes are thin — call `operations.py` + `queries.py`. No business logic in handlers.
 4. All data queries scoped by `user_id` via `src/db/queries.py`.
@@ -51,7 +51,7 @@ src/services/operations.py Shared business logic (CLI + API both call this)
 src/worker/workflow.py     Durable workflow: login → extract_all → finalise
 src/worker/steps.py        Step functions with batched DB writes
 src/worker/concurrency.py  Global + per-bank concurrency limiter
-src/adapters/base.py       BankAdapter ABC + data models
+src/bank_adapters/base.py  BankAdapter ABC + data models
 src/db/models.py           SQLAlchemy models (multi-tenant)
 src/db/queries.py          Tenant-scoped query helpers
 src/api/schemas.py         API request/response models (Literal-typed)

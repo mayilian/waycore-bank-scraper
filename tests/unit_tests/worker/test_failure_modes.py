@@ -9,8 +9,8 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from unittest.mock import AsyncMock, patch
 
-from src.adapters.base import AccountData, AccountResult, BalanceData, TransactionData
-from src.adapters.heritage_parsers import parse_balance_text, parse_transaction_row
+from src.bank_adapters.base import AccountData, AccountResult, BalanceData, TransactionData
+from src.bank_adapters.heritage_bank.parsers import parse_balance_text, parse_transaction_row
 
 # ── Partial failure model ────────────────────────────────────────────────────
 

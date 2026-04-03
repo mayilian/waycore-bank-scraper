@@ -4,10 +4,7 @@ Tier 1: Direct selector/DOM parsing — fast, free, deterministic.
 Tier 2: LLM text-only fallback — when selectors break after UI updates.
 Tier 3: LLM vision — last resort (handled by GenericAdapter).
 
-Execution policy lives here. Parsing logic lives in heritage_parsers.py.
-
-Demo credentials: user / pass / OTP 123456
-URL: https://demo-bank-2.vercel.app/
+Execution policy lives here. Parsing logic lives in parsers.py.
 """
 
 import asyncio
@@ -17,14 +14,20 @@ from decimal import Decimal
 from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import Page
 
-from src.adapters.base import AccountData, BalanceData, BankAdapter, BrowserPolicy, TransactionData
-from src.adapters.heritage_parsers import (
+from src.agent import extractor
+from src.bank_adapters.base import (
+    AccountData,
+    BalanceData,
+    BankAdapter,
+    BrowserPolicy,
+    TransactionData,
+)
+from src.bank_adapters.heritage_bank.parsers import (
     parse_accounts_from_rows,
     parse_balance_text,
     parse_llm_transaction,
     parse_transaction_row,
 )
-from src.agent import extractor
 from src.browser.screenshots import get_screenshot_store
 from src.core.logging import get_logger
 
@@ -52,8 +55,6 @@ _SEL_SUBMIT = "button[type='submit'], button:has-text('Login'), button:has-text(
 _SEL_OTP_INPUT = "input[name='otp'], input[placeholder*='OTP'], input[placeholder*='code']"
 _SEL_OTP_SUBMIT = "button[type='submit'], button:has-text('Verify'), button:has-text('Submit')"
 
-_SEL_ACCOUNT_TABLE = "table[aria-label='Accounts'], table.legacy-table"
-_SEL_TXN_TABLE = "table[aria-label='Account transactions'], table.legacy-table"
 _SEL_NEXT_PAGE = "button:has-text('Next'), a:has-text('Next'), [aria-label='Next page']"
 
 

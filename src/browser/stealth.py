@@ -21,7 +21,7 @@ from playwright_stealth import Stealth
 from src.core.config import settings
 
 if TYPE_CHECKING:
-    from src.adapters.base import BrowserPolicy
+    from src.bank_adapters.base import BrowserPolicy
 
 
 @asynccontextmanager

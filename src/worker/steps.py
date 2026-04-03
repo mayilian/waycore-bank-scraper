@@ -28,8 +28,8 @@ from playwright.async_api import Page, StorageState
 from sqlalchemy import insert as sa_insert
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from src.adapters import get_adapter
-from src.adapters.base import AccountData
+from src.bank_adapters import get_adapter
+from src.bank_adapters.base import AccountData
 from src.browser.screenshots import get_screenshot_store
 from src.browser.stealth import stealth_browser
 from src.core.crypto import decrypt

@@ -1,4 +1,4 @@
-.PHONY: install test lint format run-worker register sync accounts transactions jobs
+.PHONY: install test lint format dead-code check run-worker register sync accounts transactions jobs deploy-foundation push-image deploy-app destroy
 
 # ── Setup ────────────────────────────────────────────────────────────────────
 
@@ -20,7 +20,10 @@ lint:  ## Run linter
 format:  ## Auto-format code
 	uv run ruff format src/ cli.py tests/ scripts/
 
-check: lint test  ## Run lint + tests
+dead-code:  ## Detect unused code (vulture)
+	uv run vulture src/ cli.py vulture_whitelist.py --min-confidence 80
+
+check: lint dead-code test  ## Run lint + dead-code + tests
 
 # ── Services ─────────────────────────────────────────────────────────────────
 
@@ -56,6 +59,34 @@ jobs:  ## List sync jobs
 
 create-api-key:  ## Create an API key for the default tenant
 	uv run waycore create-api-key
+
+# ── AWS Deployment ──────────────────────────────────────────────────────────
+# Usage: make deploy-foundation ACCOUNT_ID=123456789012 AWS_REGION=us-east-1
+
+deploy-foundation:  ## Deploy foundation stack (VPC, RDS, ECR, Restate)
+	cd deploy/cdk && uv pip install -r requirements.txt && \
+		cdk deploy WayCoreFoundation -c account=$(ACCOUNT_ID) -c region=$(AWS_REGION)
+
+push-image:  ## Build and push Docker image to ECR
+	$(eval IMAGE_TAG := $(shell git rev-parse --short HEAD))
+	$(eval ECR := $(ACCOUNT_ID).dkr.ecr.$(AWS_REGION).amazonaws.com)
+	aws ecr get-login-password --region $(AWS_REGION) | \
+		docker login --username AWS --password-stdin $(ECR)
+	docker build --platform linux/arm64 -t waycore:$(IMAGE_TAG) .
+	@for repo in waycore-api waycore-worker; do \
+		docker tag waycore:$(IMAGE_TAG) $(ECR)/$$repo:$(IMAGE_TAG); \
+		docker push $(ECR)/$$repo:$(IMAGE_TAG); \
+		docker tag waycore:$(IMAGE_TAG) $(ECR)/$$repo:latest; \
+		docker push $(ECR)/$$repo:latest; \
+	done
+
+deploy-app:  ## Deploy app stack (API + Worker on Fargate)
+	cd deploy/cdk && cdk deploy WayCoreApp -c account=$(ACCOUNT_ID) -c region=$(AWS_REGION)
+
+destroy:  ## Tear down all stacks (app first, then foundation)
+	cd deploy/cdk && \
+		cdk destroy WayCoreApp -c account=$(ACCOUNT_ID) -c region=$(AWS_REGION) && \
+		cdk destroy WayCoreFoundation -c account=$(ACCOUNT_ID) -c region=$(AWS_REGION)
 
 help:  ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \

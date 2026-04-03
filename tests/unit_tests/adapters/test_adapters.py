@@ -3,11 +3,11 @@
 from datetime import datetime
 from decimal import Decimal
 
-from src.adapters import get_adapter
-from src.adapters.base import AccountData, AccountResult, BalanceData, BrowserPolicy
-from src.adapters.generic_bank_adapter import GenericBankAdapter
-from src.adapters.heritage_bank_adapter import HeritageBankAdapter
-from src.adapters.heritage_parsers import (
+from src.bank_adapters import get_adapter
+from src.bank_adapters.base import AccountData, AccountResult, BalanceData, BrowserPolicy
+from src.bank_adapters.generic.adapter import GenericBankAdapter
+from src.bank_adapters.heritage_bank.adapter import HeritageBankAdapter
+from src.bank_adapters.heritage_bank.parsers import (
     parse_balance_text,
     parse_llm_transaction,
     parse_money,

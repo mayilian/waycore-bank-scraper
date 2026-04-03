@@ -1,13 +1,21 @@
 #!/usr/bin/env bash
-set -e
+# Pre-push hook: runs lint, dead-code detection, and tests.
+# Install: git config core.hooksPath .githooks
+set -euo pipefail
 
-echo "→ ruff check..."
-uv run ruff check src/ cli.py
+echo "→ ruff check (lint)..."
+uv run ruff check src/ cli.py tests/ scripts/
 
 echo "→ ruff format check..."
-uv run ruff format --check src/ cli.py
+uv run ruff format --check src/ cli.py tests/ scripts/
+
+echo "→ vulture (dead code)..."
+uv run vulture src/ cli.py vulture_whitelist.py --min-confidence 80
 
 echo "→ mypy..."
 uv run mypy src/ cli.py
 
-echo "✓ all checks passed"
+echo "→ pytest..."
+uv run pytest tests/ -v --tb=short
+
+echo "✓ all pre-push checks passed"

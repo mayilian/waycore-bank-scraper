@@ -3,7 +3,7 @@
 from datetime import UTC, datetime
 from decimal import Decimal
 
-from src.adapters.base import AccountData, BalanceData, TransactionData
+from src.bank_adapters.base import AccountData, BalanceData, TransactionData
 
 
 def test_account_data_defaults() -> None:

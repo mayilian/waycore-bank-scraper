@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from src.adapters.base import AccountData, BalanceData, TransactionData
+from src.bank_adapters.base import AccountData, BalanceData, TransactionData
 from src.core.logging import get_logger
 
 log = get_logger(__name__)
