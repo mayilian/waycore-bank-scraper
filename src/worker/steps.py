@@ -277,19 +277,24 @@ async def step_extract_all(
         )
 
     # Batch DB writes — 1 session instead of N per account
+    # Chunk inserts to stay under PostgreSQL's 32,767 parameter limit
+    # (~10 columns per row → safe at 500 rows per chunk).
+    _TXN_BATCH_SIZE = 500
     inserted_by_account: dict[str, int] = {}
     async with get_session() as db:
         if all_txn_rows:
-            stmt = (
-                pg_insert(Transaction)
-                .values(all_txn_rows)
-                .on_conflict_do_nothing(index_elements=["account_id", "external_id"])
-                .returning(Transaction.account_id)
-            )
-            rows = (await db.execute(stmt)).all()
-            for (acct_id,) in rows:
-                inserted_by_account[acct_id] = inserted_by_account.get(acct_id, 0) + 1
-            total_inserted = len(rows)
+            for i in range(0, len(all_txn_rows), _TXN_BATCH_SIZE):
+                chunk = all_txn_rows[i : i + _TXN_BATCH_SIZE]
+                stmt = (
+                    pg_insert(Transaction)
+                    .values(chunk)
+                    .on_conflict_do_nothing(index_elements=["account_id", "external_id"])
+                    .returning(Transaction.account_id)
+                )
+                rows = (await db.execute(stmt)).all()
+                for (acct_id,) in rows:
+                    inserted_by_account[acct_id] = inserted_by_account.get(acct_id, 0) + 1
+                total_inserted += len(rows)
 
             job = await db.get(SyncJob, job_id)
             if job:

@@ -141,7 +141,13 @@ async def _run_sync(
     provided_otp: str | None = None,
 ) -> dict[str, Any]:
     reset_llm_budget()
-    sync_start = datetime.now(UTC)
+    # Journal the start time so replays after suspension/restart use the
+    # original value — not a fresh wall-clock reading that defeats timeout checks.
+    sync_start_iso: str = await ctx.run(
+        "record_start_time",
+        lambda: datetime.now(UTC).isoformat(),
+    )
+    sync_start = datetime.fromisoformat(sync_start_iso)
 
     # For webhook OTP: suspend before the browser opens (zero resources held).
     webhook_otp: str | None = None

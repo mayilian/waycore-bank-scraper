@@ -119,6 +119,19 @@ async def delete_connection(db: AsyncSession, connection_id: str, user_id: str) 
     return True
 
 
+async def has_active_sync(db: AsyncSession, connection_id: str) -> bool:
+    """Return True if the connection has a sync in pending, running, or awaiting_otp state."""
+    result = await db.execute(
+        select(SyncJob.id)
+        .where(
+            SyncJob.connection_id == connection_id,
+            SyncJob.status.in_(["pending", "running", "awaiting_otp"]),
+        )
+        .limit(1)
+    )
+    return result.first() is not None
+
+
 async def list_transactions(
     db: AsyncSession,
     user_id: str,

@@ -26,8 +26,12 @@ async def start_sync(
 ) -> TriggerSyncResponse:
     async with get_session() as db:
         conn = await queries.get_connection(db, connection_id, tenant.user_id)
-    if not conn:
-        raise HTTPException(404, "Connection not found")
+        if not conn:
+            raise HTTPException(404, "Connection not found")
+
+        # Reject if a sync is already in progress for this connection.
+        if await queries.has_active_sync(db, connection_id):
+            raise HTTPException(409, "A sync is already in progress for this connection")
 
     # Static/TOTP OTP can come from the request OR from stored credentials on the
     # connection (conn.otp_value_enc). Only reject if neither source has a value.

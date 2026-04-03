@@ -5,7 +5,7 @@ No UI concerns — just DB writes and Restate HTTP calls.
 """
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import urlparse
 
@@ -117,6 +117,29 @@ async def trigger_sync(connection_id: str, otp_mode: str = "static", otp: str | 
         raise
 
     return job_id
+
+
+async def reconcile_orphaned_jobs(stale_minutes: int = 5) -> int:
+    """Fail any jobs stuck in 'pending' longer than stale_minutes.
+
+    Call on worker startup to recover from crashes between DB commit and
+    Restate workflow trigger. Returns the number of jobs reconciled.
+    """
+    cutoff = datetime.now(UTC) - timedelta(minutes=stale_minutes)
+    count = 0
+    async with get_session() as db:
+        result = await db.execute(
+            select(SyncJob).where(
+                SyncJob.status == "pending",
+                SyncJob.created_at < cutoff,
+            )
+        )
+        for job in result.scalars():
+            job.status = "failed"
+            job.failure_reason = "Orphaned — workflow never started"
+            job.completed_at = datetime.now(UTC)
+            count += 1
+    return count
 
 
 async def provide_otp(job_id: str, code: str) -> None:

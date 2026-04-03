@@ -38,8 +38,12 @@ class _SyncSlot:
     async def __aenter__(self) -> None:
         log.debug("sync_slot.acquiring_global", bank_slug=self._slug)
         await _global_semaphore.acquire()
-        log.debug("sync_slot.acquiring_bank", bank_slug=self._slug)
-        await self._bank_sem.acquire()
+        try:
+            log.debug("sync_slot.acquiring_bank", bank_slug=self._slug)
+            await self._bank_sem.acquire()
+        except BaseException:
+            _global_semaphore.release()
+            raise
         log.debug("sync_slot.acquired", bank_slug=self._slug)
 
     async def __aexit__(self, *exc: object) -> None:

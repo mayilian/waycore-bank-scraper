@@ -76,10 +76,7 @@ services:
         condition: service_healthy
     command: >
       sh -c 'for i in 1 2 3 4 5; do
-        curl -sf -X POST http://restate:9070/deployments
-          -H "Content-Type: application/json"
-          -d "{\"uri\": \"http://worker:9000\", \"force\": true}"
-        && exit 0;
+        curl -sf -X POST http://restate:9070/deployments -H "Content-Type: application/json" -d "{\"uri\": \"http://worker:9000\", \"force\": true}" && exit 0;
         echo "Retry $$i..."; sleep 2;
       done; exit 1'
     restart: "no"

@@ -6,6 +6,7 @@ All browser interaction details (stealth, retries) belong here, not in
 the workflow layer.
 """
 
+import asyncio
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -143,13 +144,32 @@ class BankAdapter(ABC):
 
     # ── Workflow-level extraction ─────────────────────────────────────────────
 
+    # Per-account timeout — prevents a hung bank page from holding semaphore
+    # slots for the entire max_sync_duration_secs window.
+    account_extract_timeout: int = 120  # seconds
+
     async def extract_account(
         self, page: Page, account: AccountData
     ) -> tuple[list[TransactionData], BalanceData]:
         """Navigate to an account and extract both transactions and balance in one pass.
 
         Default implementation calls navigate_to_account → get_transactions → get_balance.
+        Wrapped in a per-account timeout to prevent hung pages from blocking slots.
         """
+        try:
+            return await asyncio.wait_for(
+                self._extract_account_inner(page, account),
+                timeout=self.account_extract_timeout,
+            )
+        except TimeoutError:
+            raise TimeoutError(
+                f"Account {account.external_id} extraction timed out "
+                f"after {self.account_extract_timeout}s"
+            ) from None
+
+    async def _extract_account_inner(
+        self, page: Page, account: AccountData
+    ) -> tuple[list[TransactionData], BalanceData]:
         await self.navigate_to_account(page, account)
         transactions = await self.get_transactions(page, account)
         balance = await self.get_balance(page, account)

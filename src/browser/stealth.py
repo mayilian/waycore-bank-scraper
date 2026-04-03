@@ -8,6 +8,7 @@ Launches Chromium with bot-detection evasion:
 """
 
 import asyncio
+import contextlib
 import math
 import random
 from collections.abc import AsyncGenerator
@@ -90,7 +91,10 @@ async def stealth_browser(
         try:
             yield browser, page
         finally:
-            await browser.close()
+            with contextlib.suppress(Exception):
+                await context.close()
+            with contextlib.suppress(Exception):
+                await browser.close()
 
 
 async def human_move_and_click(page: Page, selector: str) -> None:
