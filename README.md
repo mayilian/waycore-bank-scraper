@@ -53,8 +53,6 @@ curl -X POST $API/v1/connections/a2d4560d-e93b-4d73-b6e3-e21bf823cde3/sync \
   -d '{"otp_mode":"static","otp":"123456"}'
 ```
 
-Swagger UI: `$API/docs`
-
 ---
 
 ## Quick Start
@@ -86,8 +84,8 @@ API (FastAPI) ──→ Restate (durable workflow) ──→ Worker (Playwright 
 ```
 
 **Two app services, one image, plus Restate for orchestration:**
-- **API** (port 8000): Creates connections, triggers syncs, returns data. No browser. 256MB RAM.
-- **Worker** (port 9000): Runs Playwright, drives browsers, extracts data. 2GB RAM.
+- **API**: Creates connections, triggers syncs, returns data. No browser. 256MB RAM.
+- **Worker**: Runs Playwright, drives browsers, extracts data. 2GB RAM.
 - **Restate**: Durable workflow engine. Journals every step, replays on crash.
 
 ### Workflow
