@@ -12,6 +12,7 @@ directly — it receives a page, takes observations, and returns actions or data
 """
 
 import base64
+import contextvars
 import json
 import re
 from enum import StrEnum
@@ -145,19 +146,19 @@ async def _screenshot_b64(page: Page) -> str:
 
 
 # ── LLM call budget ──────────────────────────────────────────────────────────
-# Per-sync call counter. Reset at the start of each sync job via reset_llm_budget().
+# Per-sync call counter, stored in contextvars so concurrent syncs in the same
+# process each get their own independent budget.
 
-_llm_call_count: int = 0
-_llm_call_limit: int = 100  # overridden from settings on reset
+_llm_call_count: contextvars.ContextVar[int] = contextvars.ContextVar("_llm_call_count", default=0)
+_llm_call_limit: contextvars.ContextVar[int] = contextvars.ContextVar("_llm_call_limit", default=100)
 
 
 def reset_llm_budget() -> None:
     """Reset the LLM call counter. Called at sync start."""
-    global _llm_call_count, _llm_call_limit
     from src.core.config import settings
 
-    _llm_call_count = 0
-    _llm_call_limit = settings.max_llm_calls_per_sync
+    _llm_call_count.set(0)
+    _llm_call_limit.set(settings.max_llm_calls_per_sync)
 
 
 # ── Core inference ────────────────────────────────────────────────────────────
@@ -166,14 +167,15 @@ def reset_llm_budget() -> None:
 async def _ask(
     system: str, user_text: str, screenshot_b64: str | None, max_tokens: int = 1024
 ) -> str:
-    global _llm_call_count
-    _llm_call_count += 1
-    if _llm_call_count > _llm_call_limit:
+    count = _llm_call_count.get() + 1
+    limit = _llm_call_limit.get()
+    _llm_call_count.set(count)
+    if count > limit:
         raise RuntimeError(
-            f"LLM call budget exceeded ({_llm_call_limit} calls per sync). "
+            f"LLM call budget exceeded ({limit} calls per sync). "
             "Increase MAX_LLM_CALLS_PER_SYNC or investigate why so many fallbacks triggered."
         )
-    log.debug("llm.call", call_number=_llm_call_count, budget=_llm_call_limit)
+    log.debug("llm.call", call_number=count, budget=limit)
     client = get_llm_client()
     return await client.ask(system, user_text, screenshot_b64, max_tokens)
 

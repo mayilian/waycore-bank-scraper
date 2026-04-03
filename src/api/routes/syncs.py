@@ -24,13 +24,15 @@ async def start_sync(
     req: TriggerSyncRequest,
     tenant: TenantContext = Depends(get_tenant),
 ) -> TriggerSyncResponse:
-    if req.otp_mode == "static" and not req.otp:
-        raise HTTPException(422, "OTP is required when otp_mode is 'static'")
-
     async with get_session() as db:
         conn = await queries.get_connection(db, connection_id, tenant.user_id)
     if not conn:
         raise HTTPException(404, "Connection not found")
+
+    # Static/TOTP OTP can come from the request OR from stored credentials on the
+    # connection (conn.otp_value_enc). Only reject if neither source has a value.
+    if req.otp_mode == "static" and not req.otp and not conn.otp_value_enc:
+        raise HTTPException(422, "OTP is required when otp_mode is 'static' and no OTP is stored on the connection")
 
     job_id = await trigger_sync(connection_id, req.otp_mode)
     return TriggerSyncResponse(job_id=job_id)

@@ -88,7 +88,6 @@ async def trigger_sync(connection_id: str, otp_mode: str = "static") -> str:
                 restate_id=job_id,
                 connection_id=connection_id,
                 status="pending",
-                started_at=datetime.now(UTC),
             )
         )
 

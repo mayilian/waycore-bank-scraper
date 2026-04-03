@@ -45,7 +45,6 @@ Failure contracts — what happens at each failure point:
     Step records: whatever completed before timeout
 """
 
-import asyncio
 import functools
 from datetime import UTC, datetime
 from typing import Any
@@ -94,18 +93,7 @@ async def run(ctx: WorkflowContext, req: dict[str, Any]) -> dict[str, Any]:
     await ctx.run("mark_running", functools.partial(_set_job_status, job_id, "running"))
 
     try:
-        return await asyncio.wait_for(
-            _run_sync(ctx, job_id, connection_id, otp_mode),
-            timeout=settings.max_sync_duration_secs,
-        )
-    except TimeoutError as exc:
-        timeout_msg = f"Sync exceeded {settings.max_sync_duration_secs}s time limit"
-        log.error("workflow.timeout", job_id=job_id, limit=settings.max_sync_duration_secs)
-        await ctx.run(
-            "mark_failed",
-            functools.partial(_mark_job_failed, job_id, timeout_msg),
-        )
-        raise TerminalError(timeout_msg) from exc
+        return await _run_sync(ctx, job_id, connection_id, otp_mode)
     except Exception as exc:
         await ctx.run(
             "mark_failed",
@@ -130,6 +118,18 @@ async def _mark_job_failed(job_id: str, reason: str) -> None:
             job.status = "failed"
             job.failure_reason = reason
             job.completed_at = datetime.now(UTC)
+
+
+def _check_timeout(sync_start: datetime, job_id: str) -> None:
+    """Raise between steps if the sync has exceeded its time budget.
+
+    Called at step boundaries — never inside a ctx.run() — so it cannot
+    interfere with Restate's journal replay.
+    """
+    elapsed = (datetime.now(UTC) - sync_start).total_seconds()
+    limit = settings.max_sync_duration_secs
+    if elapsed > limit:
+        raise RuntimeError(f"Sync exceeded {limit}s time limit (elapsed {elapsed:.0f}s)")
 
 
 async def _run_sync(
@@ -163,6 +163,8 @@ async def _run_sync(
     # Both steps launch browsers, so both must be gated by concurrency limits.
     # Two layers: global limit (prevent OOM) + per-bank limit (prevent IP bans).
     async with acquire_sync_slot(bank_slug):
+        _check_timeout(sync_start, job_id)
+
         # Step 1: Login (browser #1)
         login_result: dict[str, Any] = await ctx.run(
             "login",
@@ -170,6 +172,8 @@ async def _run_sync(
         )
         session_state: Any = login_result["storage_state"]
         post_login_url: str = login_result["post_login_url"]
+
+        _check_timeout(sync_start, job_id)
 
         # Step 2: Extract all accounts (browser #2)
         extract_result: dict[str, Any] = await ctx.run(

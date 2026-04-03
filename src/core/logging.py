@@ -64,4 +64,4 @@ def bind_job_context(job_id: str, connection_id: str, bank_slug: str) -> None:
 
 
 def clear_job_context() -> None:
-    structlog.contextvars.clear_contextvars()
+    structlog.contextvars.unbind_contextvars("job_id", "connection_id", "bank_slug")

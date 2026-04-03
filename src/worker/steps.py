@@ -348,31 +348,36 @@ async def _persist_accounts(
 ) -> dict[str, str]:
     """Persist discovered accounts and return {external_id: db_id} mapping.
 
-    Uses ON CONFLICT DO UPDATE to handle concurrent syncs for the same connection.
+    Batched: one INSERT ... ON CONFLICT per account list, returning all IDs.
     """
     account_map: dict[str, str] = {}
 
+    rows = [
+        {
+            "id": str(uuid.uuid4()),
+            "connection_id": connection_id,
+            "external_id": acc.external_id,
+            "name": acc.name,
+            "account_type": acc.account_type,
+            "currency": acc.currency,
+        }
+        for acc in accounts
+    ]
+
     async with get_session() as db:
-        for acc_data in accounts:
-            db_id = str(uuid.uuid4())
+        for row in rows:
             stmt = (
                 pg_insert(Account)
-                .values(
-                    id=db_id,
-                    connection_id=connection_id,
-                    external_id=acc_data.external_id,
-                    name=acc_data.name,
-                    account_type=acc_data.account_type,
-                    currency=acc_data.currency,
-                )
+                .values(row)
                 .on_conflict_do_update(
                     index_elements=["connection_id", "external_id"],
-                    set_={"name": acc_data.name, "account_type": acc_data.account_type},
+                    set_={"name": row["name"], "account_type": row["account_type"]},
                 )
-                .returning(Account.id)
+                .returning(Account.id, Account.external_id)
             )
             result = await db.execute(stmt)
-            account_map[acc_data.external_id] = result.scalar_one()
+            db_id, ext_id = result.one()
+            account_map[ext_id] = db_id
 
         job = await db.get(SyncJob, job_id)
         if job:

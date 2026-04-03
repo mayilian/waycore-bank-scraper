@@ -164,7 +164,7 @@ class TestLLMBudget:
         from src.agent.extractor import reset_llm_budget
 
         reset_llm_budget()
-        assert extractor._llm_call_count == 0
+        assert extractor._llm_call_count.get() == 0
 
 
 # ── Concurrency limiter ──────────────────────────────────────────────────────
