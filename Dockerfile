@@ -51,4 +51,8 @@ EXPOSE 9000
 HEALTHCHECK --interval=10s --timeout=3s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:9000/restate/health')" 2>/dev/null || exit 1
 
+COPY entrypoint.sh .
+RUN chmod +x entrypoint.sh
+
+ENTRYPOINT ["./entrypoint.sh"]
 CMD ["uv", "run", "hypercorn", "src.worker.app:app", "--bind", "0.0.0.0:9000"]

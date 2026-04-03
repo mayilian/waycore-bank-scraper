@@ -2,31 +2,33 @@
 
 Entry point: ``uv run hypercorn "src.worker.app:app" --bind "0.0.0.0:9000"``
 
-After starting, register with the Restate server::
-
-    curl -X POST http://localhost:9070/deployments \
-      -H 'Content-Type: application/json' \
-      -d '{"uri": "http://localhost:9000"}'
-
-In Docker Compose this registration is handled by the 'register' service.
+On startup the worker automatically registers itself with the Restate server
+and reconciles any orphaned jobs from prior crashes.
 """
 
 import asyncio
 
+import httpx
 import restate
 
+from src.core.config import settings
 from src.core.logging import configure_logging, get_logger
 from src.services.operations import reconcile_orphaned_jobs
 from src.worker.workflow import sync_workflow
 
 log = get_logger(__name__)
 
+_background_tasks: set[asyncio.Task[None]] = set()
+
 
 def create_app() -> object:
     """Build and return the Restate ASGI application."""
     configure_logging("worker")
-    # Reconcile jobs orphaned by prior crashes (pending > 5 min with no workflow).
-    asyncio.get_event_loop().create_task(_reconcile_on_startup())
+    loop = asyncio.get_event_loop()
+    for coro in (_reconcile_on_startup(), _register_with_restate()):
+        task = loop.create_task(coro)
+        _background_tasks.add(task)
+        task.add_done_callback(_background_tasks.discard)
     return restate.app(services=[sync_workflow])
 
 
@@ -37,6 +39,33 @@ async def _reconcile_on_startup() -> None:
             log.info("worker.reconciled_orphaned_jobs", count=count)
     except Exception:
         log.warning("worker.reconcile_failed", exc_info=True)
+
+
+async def _register_with_restate(retries: int = 5, delay: float = 3.0) -> None:
+    """Register this worker with the Restate server on startup.
+
+    Retries a few times since Restate may not be ready immediately.
+    """
+    admin_url = settings.restate_admin_url
+    worker_url = settings.restate_worker_url
+    payload = {"uri": worker_url, "force": True}
+
+    async with httpx.AsyncClient(timeout=5) as client:
+        for attempt in range(1, retries + 1):
+            try:
+                await client.post(f"{admin_url}/deployments", json=payload)
+                log.info(
+                    "worker.registered_with_restate",
+                    admin_url=admin_url,
+                    worker_url=worker_url,
+                )
+                return
+            except Exception:
+                if attempt < retries:
+                    log.debug("worker.restate_not_ready", attempt=attempt, retry_in=delay)
+                    await asyncio.sleep(delay)
+                else:
+                    log.warning("worker.restate_registration_failed", attempts=retries)
 
 
 app = create_app()

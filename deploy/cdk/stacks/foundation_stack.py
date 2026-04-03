@@ -72,6 +72,8 @@ class WayCoreFoundation(Stack):
         self.worker_sg.add_ingress_rule(self.ecs_sg, ec2.Port.tcp(9000), "Restate to Worker")
         # Worker → Restate (for callbacks)
         self.ecs_sg.add_ingress_rule(self.worker_sg, ec2.Port.tcp(8080), "Worker to Restate")
+        # Worker → Restate admin (for deployment registration)
+        self.ecs_sg.add_ingress_rule(self.worker_sg, ec2.Port.tcp(9070), "Worker to Restate admin")
 
         # ---------------------------------------------------------------
         # Secrets Manager

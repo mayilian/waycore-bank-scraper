@@ -311,9 +311,9 @@ docker compose down
 
 ## AWS Deployment (CDK)
 
-Two CDK stacks: **Foundation** (VPC, RDS, ECR, S3, Secrets, Restate) and **App** (API + Worker Fargate services). Full infrastructure defined in `deploy/cdk/waycore_stack.py`.
+Two CDK stacks: **Foundation** (VPC, RDS, ECR, S3, Secrets, Restate) and **App** (API + Worker Fargate services).
 
-**Prerequisites:** AWS CLI, Node.js (CDK CLI), Docker with `--platform linux/arm64` support (native on Apple Silicon, emulated on x86), [Session Manager plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html).
+**Prerequisites:** AWS CLI (authenticated), Node.js (for CDK CLI), Docker with `--platform linux/arm64` support (native on Apple Silicon, emulated on x86), [Session Manager plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html).
 
 | Component | Spec |
 |---|---|
@@ -323,29 +323,52 @@ Two CDK stacks: **Foundation** (VPC, RDS, ECR, S3, Secrets, Restate) and **App**
 | **Database** | RDS PostgreSQL 16, db.t4g.micro, encrypted |
 | **Service mesh** | Cloud Map (`*.waycore.local`) for private DNS |
 
+### Set environment once
+
 ```bash
-# 1. Deploy Foundation (VPC, RDS, ECR repos, S3, Restate)
-cd deploy/cdk && pip install -r requirements.txt
-cdk deploy WayCoreFoundation -c account=ACCOUNT_ID -c region=us-east-1
-
-# 2. Build and push Docker image (same image serves both API and Worker)
-ACCOUNT=YOUR_ACCOUNT_ID REGION=us-east-1 TAG=$(git rev-parse --short HEAD)
-aws ecr get-login-password --region $REGION | \
-  docker login --username AWS --password-stdin $ACCOUNT.dkr.ecr.$REGION.amazonaws.com
-docker build --platform linux/arm64 -t waycore:$TAG .
-for repo in waycore-api waycore-worker; do
-  docker tag waycore:$TAG $ACCOUNT.dkr.ecr.$REGION.amazonaws.com/$repo:$TAG
-  docker push $ACCOUNT.dkr.ecr.$REGION.amazonaws.com/$repo:$TAG
-done
-
-# 3. Deploy App (API + Worker Fargate services)
-cdk deploy WayCoreApp -c account=ACCOUNT_ID -c region=us-east-1
-
-# Teardown (App first, then Foundation — removes everything)
-cdk destroy WayCoreApp && cdk destroy WayCoreFoundation
+export ACCOUNT_ID=123456789012   # your AWS account
+export AWS_REGION=us-east-1
 ```
 
-Secrets (`ENCRYPTION_KEY`, LLM API key) go in AWS Secrets Manager (`waycore/secrets`). Migrations run via `alembic upgrade head` on the worker. Worker registration with Restate happens via ECS exec. See `deploy/cdk/` for full details.
+### 1. Deploy Foundation (VPC, RDS, ECR, S3, Restate)
+
+```bash
+make deploy-foundation
+```
+
+### 2. Build and push Docker image
+
+Same image serves both API and Worker:
+
+```bash
+make push-image
+```
+
+### 3. Configure secrets
+
+Add `ENCRYPTION_KEY` and your LLM API key to AWS Secrets Manager (`waycore/secrets`):
+
+```bash
+aws secretsmanager put-secret-value --secret-id waycore/secrets \
+  --secret-string '{"ENCRYPTION_KEY":"your-fernet-key","ANTHROPIC_API_KEY":"your-key"}' \
+  --region $AWS_REGION
+```
+
+### 4. Deploy App (API + Worker on Fargate)
+
+```bash
+make deploy-app
+```
+
+Migrations run automatically on worker startup. The worker self-registers with Restate — no manual steps needed.
+
+### Teardown
+
+App first, then Foundation (removes everything):
+
+```bash
+make destroy
+```
 
 ---
 
@@ -381,8 +404,8 @@ Full list in `src/core/config.py`.
 
 ## Adding a New Bank
 
-1. Create `src/adapters/<slug>_adapter.py` implementing `BankAdapter`
-2. Register in `ADAPTER_REGISTRY` in `src/adapters/__init__.py`
+1. Create `src/bank_adapters/<slug>/adapter.py` implementing `BankAdapter`
+2. Register in `ADAPTER_REGISTRY` in `src/bank_adapters/__init__.py`
 3. Unknown URLs automatically use `GenericBankAdapter` (full LLM)
 
 ---
@@ -396,10 +419,13 @@ src/
     auth.py             API key auth → TenantContext (SHA-256 + hmac)
     schemas.py          Pydantic request/response models
     routes/             Thin route handlers → operations.py + queries.py
-  adapters/             BankAdapter ABC + per-bank implementations
-    heritage_bank_adapter.py   Demo bank: deterministic selectors + LLM fallback
-    heritage_parsers.py        Pure parsing functions (no browser)
-    generic_bank_adapter.py    LLM-driven adapter for unknown banks
+  bank_adapters/        BankAdapter ABC + per-bank implementations
+    base.py                    BankAdapter ABC + data models
+    heritage_bank/             Heritage Trust Bank adapter
+      adapter.py               Deterministic selectors + LLM fallback
+      parsers.py               Pure parsing functions (no browser)
+    generic/                   LLM-driven adapter for unknown banks
+      adapter.py               Full LLM extraction
   agent/
     llm.py              LLMClient protocol + providers (Anthropic, Bedrock, OpenAI)
     extractor.py        Per-goal LLM extraction with task-specific DOM observers

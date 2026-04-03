@@ -121,7 +121,7 @@ async def _mark_job_failed(job_id: str, reason: str) -> None:
             job.completed_at = datetime.now(UTC)
 
 
-def _check_timeout(sync_start: datetime, job_id: str) -> None:
+def _check_timeout(sync_start: datetime) -> None:
     """Raise between steps if the sync has exceeded its time budget.
 
     Called at step boundaries — never inside a ctx.run() — so it cannot
@@ -175,7 +175,7 @@ async def _run_sync(
         # Both steps launch browsers, so both must be gated by concurrency limits.
         # Two layers: global limit (prevent OOM) + per-bank limit (prevent IP bans).
         async with acquire_sync_slot(bank_slug):
-            _check_timeout(sync_start, job_id)
+            _check_timeout(sync_start)
 
             # Step 1: Login (browser #1)
             # OTP priority: webhook OTP (from ctx.promise) > request-provided OTP > stored OTP (resolved in step_login)
@@ -187,7 +187,7 @@ async def _run_sync(
             session_state: Any = login_result["storage_state"]
             post_login_url: str = login_result["post_login_url"]
 
-            _check_timeout(sync_start, job_id)
+            _check_timeout(sync_start)
 
             # Step 2: Extract all accounts (browser #2)
             extract_result: dict[str, Any] = await ctx.run(

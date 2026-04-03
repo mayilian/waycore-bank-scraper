@@ -42,6 +42,8 @@ class Settings(BaseSettings):
     encryption_key: SecretStr  # Fernet key — generate with: Fernet.generate_key().decode()
     encryption_key_previous: SecretStr = SecretStr("")  # old key for rotation
     restate_ingress_url: str = "http://localhost:8080"
+    restate_admin_url: str = "http://localhost:9070"
+    restate_worker_url: str = "http://localhost:9000"
     worker_port: int = Field(default=9000, ge=1, le=65535)
     playwright_headful: bool = False
     screenshot_dir: Path = Path("data/screenshots")

@@ -35,10 +35,14 @@ class WayCoreApp(Stack):
         super().__init__(scope, construct_id, **kwargs)
 
         restate_ingress_url = "http://restate.waycore.local:8080"
+        restate_admin_url = "http://restate.waycore.local:9070"
+        restate_worker_url = "http://worker.waycore.local:9000"
 
         shared_env = {
             "USE_RDS_PROXY": "false",
             "RESTATE_INGRESS_URL": restate_ingress_url,
+            "RESTATE_ADMIN_URL": restate_admin_url,
+            "RESTATE_WORKER_URL": restate_worker_url,
         }
         shared_secrets = {
             "DB_HOST": ecs.Secret.from_secrets_manager(foundation.db.secret, "host"),
