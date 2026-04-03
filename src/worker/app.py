@@ -7,6 +7,7 @@ and reconciles any orphaned jobs from prior crashes.
 """
 
 import asyncio
+from typing import Any
 
 import httpx
 import restate
@@ -19,17 +20,34 @@ from src.worker.workflow import sync_workflow
 log = get_logger(__name__)
 
 _background_tasks: set[asyncio.Task[None]] = set()
+_startup_done = False
 
 
-def create_app() -> object:
-    """Build and return the Restate ASGI application."""
+def _create_restate_app() -> Any:
     configure_logging("worker")
-    loop = asyncio.get_event_loop()
+    return restate.app(services=[sync_workflow])
+
+
+_restate_app = _create_restate_app()
+
+
+async def _run_startup_tasks() -> None:
+    """Run startup tasks once the event loop is running."""
+    global _startup_done
+    if _startup_done:
+        return
+    _startup_done = True
+
     for coro in (_reconcile_on_startup(), _register_with_restate()):
-        task = loop.create_task(coro)
+        task = asyncio.create_task(coro)
         _background_tasks.add(task)
         task.add_done_callback(_background_tasks.discard)
-    return restate.app(services=[sync_workflow])
+
+
+async def app(scope: dict[str, Any], receive: Any, send: Any) -> None:
+    """ASGI wrapper that fires startup tasks on first request, then delegates to Restate."""
+    await _run_startup_tasks()
+    await _restate_app(scope, receive, send)
 
 
 async def _reconcile_on_startup() -> None:
@@ -66,6 +84,3 @@ async def _register_with_restate(retries: int = 5, delay: float = 3.0) -> None:
                     await asyncio.sleep(delay)
                 else:
                     log.warning("worker.restate_registration_failed", attempts=retries)
-
-
-app = create_app()
