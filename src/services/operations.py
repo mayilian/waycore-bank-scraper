@@ -77,9 +77,7 @@ async def find_or_create_connection(
         return connection_id, bank_slug
 
 
-async def trigger_sync(
-    connection_id: str, otp_mode: str = "static", otp: str | None = None
-) -> str:
+async def trigger_sync(connection_id: str, otp_mode: str = "static", otp: str | None = None) -> str:
     """Create a SyncJob and trigger the Restate workflow. Returns job_id."""
     job_id = str(uuid.uuid4())
 

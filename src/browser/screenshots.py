@@ -54,8 +54,12 @@ class S3ScreenshotStore:
     def _client(self):  # type: ignore[no-untyped-def]
         session = self._aioboto3.Session()
         kwargs: dict[str, Any] = {
-            "aws_access_key_id": settings.s3_access_key_id.get_secret_value() if settings.s3_access_key_id else None,
-            "aws_secret_access_key": settings.s3_secret_access_key.get_secret_value() if settings.s3_secret_access_key else None,
+            "aws_access_key_id": settings.s3_access_key_id.get_secret_value()
+            if settings.s3_access_key_id
+            else None,
+            "aws_secret_access_key": settings.s3_secret_access_key.get_secret_value()
+            if settings.s3_secret_access_key
+            else None,
         }
         if settings.s3_endpoint_url:
             kwargs["endpoint_url"] = settings.s3_endpoint_url
