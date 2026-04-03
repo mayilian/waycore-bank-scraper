@@ -148,9 +148,11 @@ async def run_batch(
         "avg_duration": sum(durations) / len(durations) if durations else 0,
     }
 
-    print(f"\n  Summary: {stats['successes']}/{n} succeeded, wall={wall:.1f}s, "
-          f"min={stats['min_duration']:.1f}s, max={stats['max_duration']:.1f}s, "
-          f"avg={stats['avg_duration']:.1f}s")
+    print(
+        f"\n  Summary: {stats['successes']}/{n} succeeded, wall={wall:.1f}s, "
+        f"min={stats['min_duration']:.1f}s, max={stats['max_duration']:.1f}s, "
+        f"avg={stats['avg_duration']:.1f}s"
+    )
 
     return stats
 
@@ -190,7 +192,9 @@ async def main() -> None:
         print(f"\n{'=' * 60}")
         print("  FINAL REPORT")
         print(f"{'=' * 60}")
-        print(f"  {'Batch':>6s}  {'Success':>8s}  {'Wall(s)':>8s}  {'Avg(s)':>8s}  {'Max(s)':>8s}  {'Throughput':>12s}")
+        print(
+            f"  {'Batch':>6s}  {'Success':>8s}  {'Wall(s)':>8s}  {'Avg(s)':>8s}  {'Max(s)':>8s}  {'Throughput':>12s}"
+        )
         for s in all_stats:
             tp = s["successes"] / s["wall_time"] if s["wall_time"] > 0 else 0
             print(

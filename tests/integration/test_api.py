@@ -108,9 +108,7 @@ class TestAuthBoundaries:
             assert resp.status_code == 200
             assert resp.json() == []
 
-    async def test_cannot_sync_other_tenants_connection(
-        self, tenant: dict[str, str]
-    ) -> None:
+    async def test_cannot_sync_other_tenants_connection(self, tenant: dict[str, str]) -> None:
         """Trigger sync on a non-existent connection → 404, not 500."""
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
@@ -306,9 +304,7 @@ class TestAccountEndpoints:
             resp = await client.get(f"/v1/accounts/{uuid.uuid4()}/balances", headers=headers)
             assert resp.status_code == 404
 
-    async def test_transactions_filtered_by_account(
-        self, tenant_with_data: dict[str, str]
-    ) -> None:
+    async def test_transactions_filtered_by_account(self, tenant_with_data: dict[str, str]) -> None:
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             headers = {"Authorization": f"Bearer {tenant_with_data['api_key']}"}
