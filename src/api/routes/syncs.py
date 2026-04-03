@@ -32,7 +32,9 @@ async def start_sync(
     # Static/TOTP OTP can come from the request OR from stored credentials on the
     # connection (conn.otp_value_enc). Only reject if neither source has a value.
     if req.otp_mode == "static" and not req.otp and not conn.otp_value_enc:
-        raise HTTPException(422, "OTP is required when otp_mode is 'static' and no OTP is stored on the connection")
+        raise HTTPException(
+            422, "OTP is required when otp_mode is 'static' and no OTP is stored on the connection"
+        )
 
     job_id = await trigger_sync(connection_id, req.otp_mode)
     return TriggerSyncResponse(job_id=job_id)

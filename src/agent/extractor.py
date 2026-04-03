@@ -150,7 +150,9 @@ async def _screenshot_b64(page: Page) -> str:
 # process each get their own independent budget.
 
 _llm_call_count: contextvars.ContextVar[int] = contextvars.ContextVar("_llm_call_count", default=0)
-_llm_call_limit: contextvars.ContextVar[int] = contextvars.ContextVar("_llm_call_limit", default=100)
+_llm_call_limit: contextvars.ContextVar[int] = contextvars.ContextVar(
+    "_llm_call_limit", default=100
+)
 
 
 def reset_llm_budget() -> None:
